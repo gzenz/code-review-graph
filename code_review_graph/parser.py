@@ -365,7 +365,9 @@ class CodeParser:
         edges = self._resolve_call_targets(nodes, edges, file_path_str)
 
         # Generate TESTED_BY edges: when a test function calls a production
-        # function, create an edge from the production function back to the test.
+        # function, record that the production function is tested.
+        # Convention: source=test_func, target=production_func so that
+        # get_edges_by_target(production_qn) finds the testing relationship.
         if test_file:
             test_qnames = set()
             for n in nodes:
@@ -376,8 +378,8 @@ class CodeParser:
                 if edge.kind == "CALLS" and edge.source in test_qnames:
                     edges.append(EdgeInfo(
                         kind="TESTED_BY",
-                        source=edge.target,
-                        target=edge.source,
+                        source=edge.source,
+                        target=edge.target,
                         file_path=edge.file_path,
                         line=edge.line,
                     ))
@@ -487,8 +489,8 @@ class CodeParser:
                 if edge.kind == "CALLS" and edge.source in test_qnames:
                     all_edges.append(EdgeInfo(
                         kind="TESTED_BY",
-                        source=edge.target,
-                        target=edge.source,
+                        source=edge.source,
+                        target=edge.target,
                         file_path=edge.file_path,
                         line=edge.line,
                     ))
@@ -702,8 +704,8 @@ class CodeParser:
                 if edge.kind == "CALLS" and edge.source in test_qnames:
                     all_edges.append(EdgeInfo(
                         kind="TESTED_BY",
-                        source=edge.target,
-                        target=edge.source,
+                        source=edge.source,
+                        target=edge.target,
                         file_path=edge.file_path,
                         line=edge.line,
                     ))

@@ -251,6 +251,15 @@ def query_graph(
                     test = store.get_node(e.source_qualified)
                     if test:
                         results.append(node_to_dict(test))
+            # Fallback: TESTED_BY edges may store bare-name targets
+            if not results and node:
+                bare_tb = store.search_edges_by_target_name(
+                    node.name, kind="TESTED_BY",
+                )
+                for e in bare_tb:
+                    test = store.get_node(e.source_qualified)
+                    if test:
+                        results.append(node_to_dict(test))
             # Also search by naming convention
             name = node.name if node else target
             test_nodes = store.search_nodes(f"test_{name}", limit=10)
