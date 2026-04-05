@@ -359,13 +359,55 @@ def _detect_leiden_sub(
 def _detect_file_based(
     nodes: list[GraphNode], edges: list[GraphEdge], min_size: int
 ) -> list[dict[str, Any]]:
-    """Group nodes by file_path when igraph is not available."""
-    by_file: dict[str, list[GraphNode]] = defaultdict(list)
+    """Group nodes by directory when Leiden is unavailable or over-fragments.
+
+    Strips the longest common directory prefix from all file paths, then
+    adaptively picks a grouping depth that yields 10-200 communities.
+    """
+    # Collect all directory paths (normalized, without filename)
+    all_dir_parts: list[list[str]] = []
     for n in nodes:
-        by_file[n.file_path].append(n)
+        parts = n.file_path.replace("\\", "/").split("/")
+        all_dir_parts.append([p for p in parts[:-1] if p])
+
+    # Find the longest common prefix among directory parts
+    prefix_len = 0
+    if all_dir_parts:
+        shortest = min(len(p) for p in all_dir_parts)
+        for i in range(shortest):
+            seg = all_dir_parts[0][i]
+            if all(p[i] == seg for p in all_dir_parts):
+                prefix_len = i + 1
+            else:
+                break
+
+    def _group_at_depth(depth: int) -> dict[str, list[GraphNode]]:
+        groups: dict[str, list[GraphNode]] = defaultdict(list)
+        for n in nodes:
+            parts = n.file_path.replace("\\", "/").split("/")
+            dir_parts = [p for p in parts[:-1] if p]
+            remainder = dir_parts[prefix_len:]
+            if remainder:
+                key = "/".join(remainder[:depth])
+            else:
+                key = parts[-1].rsplit(".", 1)[0] if parts else "root"
+            groups[key].append(n)
+        return groups
+
+    # Try increasing depths until we get 10-200 qualifying groups
+    max_depth = max((len(p) - prefix_len for p in all_dir_parts), default=0)
+    best_groups = _group_at_depth(1)  # depth=1 always works (file stem fallback)
+    for depth in range(1, max_depth + 1):
+        groups = _group_at_depth(depth)
+        qualifying = sum(1 for v in groups.values() if len(v) >= min_size)
+        best_groups = groups
+        if qualifying >= 10:
+            break
+
+    by_dir = best_groups
 
     communities: list[dict[str, Any]] = []
-    for file_path, members in by_file.items():
+    for dir_path, members in by_dir.items():
         if len(members) < min_size:
             continue
         member_qns = {m.qualified_name for m in members}
@@ -380,7 +422,7 @@ def _detect_file_based(
             "size": len(members),
             "cohesion": round(cohesion, 4),
             "dominant_language": dominant_lang,
-            "description": f"File-based community: {file_path}",
+            "description": f"Directory-based community: {dir_path}",
             "members": [m.qualified_name for m in members],
             "member_qns": member_qns,
         })
