@@ -1,23 +1,18 @@
 # Changelog
 
-## [2.2.0] - 2026-04-05
+## [Unreleased]
 
 ### Added
-- **PreToolUse search enrichment**: New `code-review-graph enrich` CLI subcommand and Claude Code hook. When agents use Grep/Glob/Bash(rg/grep)/Read, results are automatically enriched with callers, callees, execution flows, community membership, and test coverage from the graph. Zero-friction adoption -- agents get structural context passively.
-- **Platform-aware instructions**: CLAUDE.md gets lighter instructions (hooks handle exploration), non-hook platforms (.cursorrules, AGENTS.md, etc.) get stronger "prefer graph tools" guidance with full tool table.
-
-### Changed
-- **CLAUDE.md instructions**: Removed "ALWAYS use graph tools BEFORE Grep/Glob/Read" directive -- the enrich hook now handles this passively. Instructions now focus on deep-analysis tools only (detect_changes, impact_radius, etc.), saving ~150 tokens per conversation.
-
-### Upgrade note
-If upgrading from v2.1.0, delete the `<!-- code-review-graph MCP tools -->` section from your CLAUDE.md (and .cursorrules, AGENTS.md, etc.) and re-run `code-review-graph install` to get the updated instructions.
+- **Decorator extraction in parser**: Functions and classes now store decorators/annotations in `node.extra["decorators"]` (Python, Java/Kotlin/C#, TypeScript)
+- **Expanded framework decorator patterns**: Dead code detection and entry point discovery now recognize pytest fixtures, Django signals, SQLAlchemy events, Spring annotations, Celery tasks, NestJS/Angular decorators, pydantic-ai agent tools
+- **Type annotation reference tracking**: Classes referenced in function parameter types or return types (e.g. Pydantic schemas) are no longer flagged as dead code
+- **Per-symbol IMPORTS_FROM edges**: JS/TS/TSX named imports (`import { A, B } from './mod'`) now create edges targeting individual functions/classes, not just the file -- eliminates ~320 FPs from frontend codebases
+- **ORM/framework base class exclusion**: Classes inheriting from known framework bases (Base, DeclarativeBase, BaseModel, BaseSettings, etc.) are no longer flagged as dead code
 
 ### Fixed
-- **Multi-word FTS5 search**: Queries now use AND logic (`"graph" AND "store"`) instead of phrase matching, so "graph store" finds GraphStore
-- **Deduplicated query results**: `callers_of`/`callees_of`/`inheritors_of` no longer return duplicate nodes when multiple call-site edges exist
-- **Ambiguous query auto-resolution**: Bare-name queries with multiple matches now auto-resolve to the production function when exactly one non-test candidate exists
-- **Test function deprioritization**: Search results apply 0.5x score penalty to test functions so production code ranks higher
-- **Composite edge index**: v6 migration adds composite index on edges for faster `upsert_edge` performance
+- **Dead code false positives**: Dunder methods (`__init__`, `__str__`, etc.) excluded from dead code results -- they are runtime-invoked and never have explicit callers
+- **Dead code false positives**: Decorated entry points (e.g. `@app.get`, `@pytest.fixture`) now correctly excluded via parser-populated decorator metadata
+- **Dead code false positives**: Alembic `upgrade`/`downgrade` and FastAPI `lifespan`/`get_db` recognized as entry points
 
 ## [2.1.0] - 2026-04-03
 
