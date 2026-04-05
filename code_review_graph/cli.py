@@ -151,6 +151,67 @@ def _handle_init(args: argparse.Namespace) -> None:
     print("  2. Restart your AI coding tool to pick up the new config")
 
 
+def _run_post_processing(store, quiet: bool = False) -> None:
+    """Run signatures, FTS, flows, and communities after build/update."""
+    import sqlite3
+
+    # Signatures
+    try:
+        nodes = store._conn.execute(
+            "SELECT id, name, kind, params, return_type FROM nodes "
+            "WHERE kind IN ('Function','Test','Class')"
+        ).fetchall()
+        for row in nodes:
+            node_id, name, kind, params, ret = row
+            if kind in ("Function", "Test"):
+                sig = f"{name}({params or ''})"
+                if ret:
+                    sig += f" -> {ret}"
+            elif kind == "Class":
+                sig = f"class {name}"
+            else:
+                sig = name
+            store.update_node_signature(node_id, sig[:512])
+        store.commit()
+    except (sqlite3.OperationalError, TypeError, KeyError) as e:
+        if not quiet:
+            print(f"Warning: signature computation failed: {e}")
+
+    # FTS index
+    try:
+        from .search import rebuild_fts_index
+        fts_count = rebuild_fts_index(store)
+        if not quiet:
+            print(f"FTS indexed: {fts_count} nodes")
+    except (sqlite3.OperationalError, ImportError) as e:
+        if not quiet:
+            print(f"Warning: FTS index rebuild failed: {e}")
+
+    # Flows
+    try:
+        from .flows import store_flows as _store_flows
+        from .flows import trace_flows as _trace_flows
+        flows = _trace_flows(store)
+        count = _store_flows(store, flows)
+        if not quiet:
+            print(f"Flows detected: {count}")
+    except (sqlite3.OperationalError, ImportError) as e:
+        if not quiet:
+            print(f"Warning: flow detection failed: {e}")
+
+    # Communities
+    try:
+        from .communities import detect_communities as _detect_communities
+        from .communities import store_communities as _store_communities
+        comms = _detect_communities(store)
+        count = _store_communities(store, comms)
+        if not quiet:
+            print(f"Communities detected: {count}")
+    except (sqlite3.OperationalError, ImportError) as e:
+        if not quiet:
+            print(f"Warning: community detection failed: {e}")
+
+
 def main() -> None:
     """Main CLI entry point."""
     ap = argparse.ArgumentParser(
@@ -444,6 +505,7 @@ def main() -> None:
                 )
                 if result["errors"]:
                     print(f"Errors: {len(result['errors'])}")
+            _run_post_processing(store, quiet=args.quiet)
 
         elif args.command == "update":
             result = incremental_update(repo_root, store, base=args.base)
@@ -452,6 +514,7 @@ def main() -> None:
                     f"Incremental: {result['files_updated']} files updated, "
                     f"{result['total_nodes']} nodes, {result['total_edges']} edges"
                 )
+            _run_post_processing(store, quiet=args.quiet)
 
         elif args.command == "status":
             import json as json_mod

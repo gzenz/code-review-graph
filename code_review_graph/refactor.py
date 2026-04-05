@@ -257,6 +257,14 @@ def find_dead_code(
 
         # Check for callers (CALLS), test refs (TESTED_BY), importers (IMPORTS_FROM).
         incoming = store.get_edges_by_target(node.qualified_name)
+        # Also check bare-name edges -- most CALLS/TESTED_BY edges store
+        # unqualified target names (e.g. "run_agent" not "/path/agent.py::run_agent").
+        if not any(e.kind == "CALLS" for e in incoming):
+            bare = store.search_edges_by_target_name(node.name, kind="CALLS")
+            incoming = incoming + bare
+        if not any(e.kind == "TESTED_BY" for e in incoming):
+            bare_tb = store.search_edges_by_target_name(node.name, kind="TESTED_BY")
+            incoming = incoming + bare_tb
         has_callers = any(e.kind == "CALLS" for e in incoming)
         has_test_refs = any(e.kind == "TESTED_BY" for e in incoming)
         has_importers = any(e.kind == "IMPORTS_FROM" for e in incoming)
