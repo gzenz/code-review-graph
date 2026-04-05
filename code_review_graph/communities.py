@@ -214,10 +214,16 @@ def _detect_leiden(
     g.add_edges(edge_list)
     g.es["weight"] = weights
 
-    # Run Leiden
+    # Run Leiden -- scale resolution inversely with graph size to get
+    # coarser clusters on large repos.  Default resolution=1.0 produces
+    # thousands of tiny communities for 30k+ node graphs.
+    import math
+    n_nodes = g.vcount()
+    resolution = max(0.05, 1.0 / math.log10(max(n_nodes, 10)))
     partition = g.community_leiden(
         objective_function="modularity",
         weights="weight",
+        resolution=resolution,
     )
 
     # Build communities from partition
@@ -245,10 +251,11 @@ def _detect_leiden(
             "member_qns": member_qns,
         })
 
-    # Second pass: split large communities (>50 nodes)
+    # Second pass: split large communities (>200 nodes or >5% of graph)
+    split_threshold = max(200, len(nodes) // 20)
     final: list[dict[str, Any]] = []
     for comm in communities:
-        if comm["size"] > 50:
+        if comm["size"] > split_threshold:
             sub_nodes = [n for n in nodes if n.qualified_name in comm["member_qns"]]
             sub_edges = [
                 e for e in edges
