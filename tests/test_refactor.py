@@ -306,6 +306,34 @@ class TestFindDeadCode:
         assert "upgrade" not in dead_names
         assert "downgrade" not in dead_names
 
+    def test_find_dead_code_excludes_subclassed_class(self):
+        """Classes with subclasses (INHERITS edges) are not dead code."""
+        self.store.upsert_node(NodeInfo(
+            kind="Class", name="BaseConnector", file_path="/repo/connectors.py",
+            line_start=5, line_end=50, language="python",
+        ))
+        # A subclass inherits from BaseConnector (bare-name target)
+        self.store.upsert_edge(EdgeInfo(
+            kind="INHERITS", source="/repo/connectors.py::GarminConnector",
+            target="BaseConnector", file_path="/repo/connectors.py", line=60,
+        ))
+        self.store.commit()
+        dead = find_dead_code(self.store)
+        dead_names = {d["name"] for d in dead}
+        assert "BaseConnector" not in dead_names
+
+    def test_find_dead_code_excludes_property(self):
+        """Functions decorated with @property are not dead code."""
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="db", file_path="/repo/deps.py",
+            line_start=10, line_end=15, language="python",
+            extra={"decorators": ["property"]},
+        ))
+        self.store.commit()
+        dead = find_dead_code(self.store)
+        dead_names = {d["name"] for d in dead}
+        assert "db" not in dead_names
+
 
 class TestSuggestRefactorings:
     """Tests for suggest_refactorings."""

@@ -194,6 +194,28 @@ class TestCodeParser:
         assert "json" not in targets
         assert "get" not in targets
 
+    def test_class_receiver_call_emits_edge(self):
+        """ClassName.method() should emit a CALLS edge (static/companion call)."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/app.py"),
+            b"def main():\n    MyClass.create()\n    Factory.build()\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {c.target for c in calls}
+        assert "create" in targets
+        assert "build" in targets
+
+    def test_lowercase_receiver_call_blocked(self):
+        """obj.method() should still be blocked for lowercase receivers."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/app.py"),
+            b"def main():\n    session.execute()\n    data.get('k')\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {c.target for c in calls}
+        assert "execute" not in targets
+        assert "get" not in targets
+
     def test_parse_nonexistent_file(self):
         nodes, edges = self.parser.parse_file(Path("/nonexistent/file.py"))
         assert nodes == []
@@ -626,6 +648,27 @@ class PlainClass:
             targets = {e.target for e in import_edges}
             resolved_mod = str(mod_file.resolve())
             assert f"{resolved_mod}::helper" in targets
+        finally:
+            import shutil
+            shutil.rmtree(tmp_dir)
+
+    def test_python_aliased_import_creates_per_symbol_edge(self):
+        """from X import Y as Z should create edge to ::Y (original name)."""
+        import tempfile
+        tmp_dir = Path(tempfile.mkdtemp())
+        try:
+            mod_file = tmp_dir / "utils.py"
+            mod_file.write_bytes(b"def helper(): pass\ndef other(): pass\n")
+
+            importer = tmp_dir / "main.py"
+            importer.write_bytes(b"from utils import helper as h, other\n")
+
+            nodes, edges = self.parser.parse_file(importer)
+            import_edges = [e for e in edges if e.kind == "IMPORTS_FROM"]
+            targets = {e.target for e in import_edges}
+            resolved_mod = str(mod_file.resolve())
+            assert f"{resolved_mod}::helper" in targets
+            assert f"{resolved_mod}::other" in targets
         finally:
             import shutil
             shutil.rmtree(tmp_dir)

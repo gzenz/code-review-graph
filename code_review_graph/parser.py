@@ -1722,11 +1722,20 @@ class CodeParser:
                 line=child.start_point[0] + 1,
             ))
 
-            # Per-symbol IMPORTS_FROM edges for JS/TS/TSX named imports.
+            # Per-symbol IMPORTS_FROM edges for named imports.
             # This lets dead-code detection see that individual functions/
             # classes in the source file are referenced by importers.
             if resolved and language in ("javascript", "typescript", "tsx"):
                 for name in self._get_js_import_names(child):
+                    edges.append(EdgeInfo(
+                        kind="IMPORTS_FROM",
+                        source=file_path,
+                        target=f"{resolved}::{name}",
+                        file_path=file_path,
+                        line=child.start_point[0] + 1,
+                    ))
+            elif resolved and language == "python":
+                for name in self._get_python_import_names(child):
                     edges.append(EdgeInfo(
                         kind="IMPORTS_FROM",
                         source=file_path,
@@ -1761,6 +1770,34 @@ class CodeParser:
                                 # First identifier is the original name
                                 if idents:
                                     names.append(idents[0])
+        return names
+
+    @staticmethod
+    def _get_python_import_names(node) -> list[str]:
+        """Extract imported symbol names from a Python import statement.
+
+        For ``from X import A, B as C``, returns ``["A", "B"]``
+        (original names, not aliases).
+        """
+        names: list[str] = []
+        if node.type != "import_from_statement":
+            return names
+        seen_import = False
+        for child in node.children:
+            if child.type == "import":
+                seen_import = True
+            elif seen_import:
+                if child.type in ("identifier", "dotted_name"):
+                    names.append(child.text.decode("utf-8", errors="replace"))
+                elif child.type == "aliased_import":
+                    # from X import A as B -- extract "A" (first identifier)
+                    idents = [
+                        sub.text.decode("utf-8", errors="replace")
+                        for sub in child.children
+                        if sub.type in ("identifier", "dotted_name")
+                    ]
+                    if idents:
+                        names.append(idents[0])
         return names
 
     def _extract_calls(
@@ -2622,17 +2659,19 @@ class CodeParser:
         )
         if first.type in member_types:
             # In test files, allow all method calls (needed for TESTED_BY edges).
-            # In production code, only allow self/cls/this/super receivers.
+            # In production code, only allow self/cls/this/super receivers
+            # and uppercase-initial receivers (static/companion object calls
+            # like ClassName.method() in Kotlin/Java/C#).
             if not is_test_file:
                 receiver = first.children[0] if first.children else None
                 if receiver is None:
                     return None
+                receiver_text = receiver.text.decode("utf-8", errors="replace")
                 is_self_call = (
                     receiver.type in ("self", "this", "super")
                     or (
-                        receiver.type == "identifier"
-                        and receiver.text.decode("utf-8", errors="replace")
-                        in ("self", "cls", "this", "super")
+                        receiver.type in ("identifier", "simple_identifier")
+                        and receiver_text in ("self", "cls", "this", "super")
                     )
                     # Python super().method() -- receiver is call(identifier:"super")
                     or (
@@ -2642,7 +2681,13 @@ class CodeParser:
                         and receiver.children[0].text == b"super"
                     )
                 )
-                if not is_self_call:
+                # Uppercase receivers are likely class/companion/static calls
+                # (e.g. MyClass.create(), Companion.method()) -- allow through.
+                is_class_call = (
+                    receiver.type in ("identifier", "simple_identifier")
+                    and receiver_text[:1].isupper()
+                )
+                if not is_self_call and not is_class_call:
                     return None
 
             # Get the rightmost identifier (the method name)

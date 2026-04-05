@@ -259,6 +259,12 @@ class TestKotlinParsing:
         # Method call: repo.save(user)
         assert any("save" in t for t in targets)
 
+    def test_finds_companion_object_calls(self):
+        calls = [e for e in self.edges if e.kind == "CALLS"]
+        targets = {c.target for c in calls}
+        # Static/companion object call: UserFactory.create("Alice")
+        assert any("create" in t for t in targets)
+
 
 class TestSwiftParsing:
     def setup_method(self):

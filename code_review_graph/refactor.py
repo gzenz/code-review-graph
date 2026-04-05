@@ -255,6 +255,14 @@ def find_dead_code(
             if base_names & _FRAMEWORK_BASE_CLASSES:
                 continue
 
+        # Skip @property-decorated functions -- invoked via attribute access,
+        # not function calls, so they'll never have CALLS edges.
+        if node.kind in ("Function", "Test"):
+            decorators = node.extra.get("decorators", ())
+            if isinstance(decorators, (list, tuple)):
+                if any("property" in d for d in decorators):
+                    continue
+
         # Check for callers (CALLS), test refs (TESTED_BY), importers (IMPORTS_FROM).
         incoming = store.get_edges_by_target(node.qualified_name)
         # Also check bare-name edges -- most CALLS/TESTED_BY edges store
@@ -265,11 +273,16 @@ def find_dead_code(
         if not any(e.kind == "TESTED_BY" for e in incoming):
             bare_tb = store.search_edges_by_target_name(node.name, kind="TESTED_BY")
             incoming = incoming + bare_tb
+        # Check INHERITS -- classes with subclasses are not dead.
+        if node.kind == "Class" and not any(e.kind == "INHERITS" for e in incoming):
+            bare_inh = store.search_edges_by_target_name(node.name, kind="INHERITS")
+            incoming = incoming + bare_inh
         has_callers = any(e.kind == "CALLS" for e in incoming)
         has_test_refs = any(e.kind == "TESTED_BY" for e in incoming)
         has_importers = any(e.kind == "IMPORTS_FROM" for e in incoming)
+        has_subclasses = any(e.kind == "INHERITS" for e in incoming)
 
-        if not has_callers and not has_test_refs and not has_importers:
+        if not has_callers and not has_test_refs and not has_importers and not has_subclasses:
             dead.append({
                 "name": _sanitize_name(node.name),
                 "qualified_name": _sanitize_name(node.qualified_name),
