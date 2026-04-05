@@ -273,7 +273,10 @@ def _detect_leiden(
     # If Leiden produced no communities after min_size filtering, fall back
     # to file-based grouping (e.g., when method call filtering reduces CALLS
     # edges so much that all Leiden clusters are too small).
-    if not final:
+    # Also fall back when Leiden over-fragments (e.g., sparse graphs with
+    # many unresolved bare-name call targets create disconnected components).
+    max_communities = max(100, len(nodes) // 100)
+    if not final or len(final) > max_communities:
         return _detect_file_based(nodes, edges, min_size)
 
     return final
