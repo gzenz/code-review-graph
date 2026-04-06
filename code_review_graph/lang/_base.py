@@ -25,3 +25,11 @@ class BaseLanguageHandler:
 
     def extract_import_targets(self, node, source: bytes) -> list[str]:
         return NotImplemented
+
+    def collect_import_names(self, node, file_path: str, import_map: dict[str, str]) -> bool:
+        """Populate import_map from an import node. Return True if handled."""
+        return False
+
+    def resolve_module(self, module: str, caller_file: str) -> str | None:
+        """Resolve a module path to a file path. Return NotImplemented to fall back."""
+        return NotImplemented

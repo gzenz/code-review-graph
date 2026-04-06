@@ -127,6 +127,109 @@ type Child struct {
         assert any("Base" in e.target for e in inherits)
 
 
+class TestPythonHandler:
+    """Unit tests for PythonHandler in isolation."""
+
+    def setup_method(self):
+        from code_review_graph.lang._python import PythonHandler
+        self.handler = PythonHandler()
+
+    def test_constants(self):
+        assert self.handler.language == "python"
+        assert "class_definition" in self.handler.class_types
+        assert "function_definition" in self.handler.function_types
+        assert "call" in self.handler.call_types
+        assert "len" in self.handler.builtin_names
+        assert "print" in self.handler.builtin_names
+
+    def test_get_bases(self):
+        import tree_sitter_language_pack as tslp
+        parser = tslp.get_parser("python")
+        tree = parser.parse(b"class Child(Base, Mixin): pass\n")
+        class_nodes = [
+            n for n in tree.root_node.children if n.type == "class_definition"
+        ]
+        assert class_nodes
+        bases = self.handler.get_bases(class_nodes[0], b"")
+        assert "Base" in bases
+        assert "Mixin" in bases
+
+    def test_extract_import_targets_from_import(self):
+        import tree_sitter_language_pack as tslp
+        parser = tslp.get_parser("python")
+        tree = parser.parse(b"from os.path import join\n")
+        imp_nodes = [
+            n for n in tree.root_node.children
+            if n.type == "import_from_statement"
+        ]
+        assert imp_nodes
+        targets = self.handler.extract_import_targets(imp_nodes[0], b"")
+        assert "os.path" in targets
+
+    def test_collect_import_names_from_import(self):
+        import tree_sitter_language_pack as tslp
+        parser = tslp.get_parser("python")
+        tree = parser.parse(b"from os.path import join, exists\n")
+        imp_nodes = [
+            n for n in tree.root_node.children
+            if n.type == "import_from_statement"
+        ]
+        assert imp_nodes
+        import_map: dict[str, str] = {}
+        handled = self.handler.collect_import_names(imp_nodes[0], "", import_map)
+        assert handled
+        assert import_map["join"] == "os.path"
+        assert import_map["exists"] == "os.path"
+
+    def test_collect_import_names_module_import(self):
+        import tree_sitter_language_pack as tslp
+        parser = tslp.get_parser("python")
+        tree = parser.parse(b"import json\nimport os.path\n")
+        imp_nodes = [
+            n for n in tree.root_node.children if n.type == "import_statement"
+        ]
+        assert len(imp_nodes) == 2
+        import_map: dict[str, str] = {}
+        self.handler.collect_import_names(imp_nodes[0], "", import_map)
+        self.handler.collect_import_names(imp_nodes[1], "", import_map)
+        assert import_map["json"] == "json"
+        assert import_map["os"] == "os.path"
+
+    def test_collect_import_names_aliased(self):
+        import tree_sitter_language_pack as tslp
+        parser = tslp.get_parser("python")
+        tree = parser.parse(b"from os.path import join as pjoin\n")
+        imp_nodes = [
+            n for n in tree.root_node.children
+            if n.type == "import_from_statement"
+        ]
+        import_map: dict[str, str] = {}
+        self.handler.collect_import_names(imp_nodes[0], "", import_map)
+        assert import_map["pjoin"] == "os.path"
+
+    def test_resolve_module(self, tmp_path):
+        # Create a fake module structure
+        (tmp_path / "mymod.py").write_text("x = 1\n")
+        caller = str(tmp_path / "main.py")
+        result = self.handler.resolve_module("mymod", caller)
+        assert result is not None
+        assert result.endswith("mymod.py")
+
+    def test_resolve_module_package(self, tmp_path):
+        pkg = tmp_path / "mypkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        caller = str(tmp_path / "main.py")
+        result = self.handler.resolve_module("mypkg", caller)
+        assert result is not None
+        assert result.endswith("__init__.py")
+
+    def test_resolve_module_not_found(self, tmp_path):
+        caller = str(tmp_path / "main.py")
+        result = self.handler.resolve_module("nonexistent", caller)
+        assert result is None
+
+
 class TestRustParsing:
     def setup_method(self):
         self.parser = CodeParser()

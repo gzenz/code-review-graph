@@ -110,7 +110,6 @@ EXTENSION_TO_LANGUAGE: dict[str, str] = {
 # Tree-sitter node type mappings per language
 # Maps (language) -> dict of semantic role -> list of TS node types
 _CLASS_TYPES: dict[str, list[str]] = {
-    "python": ["class_definition"],
     "javascript": ["class_declaration", "class"],
     "typescript": ["class_declaration", "class"],
     "tsx": ["class_declaration", "class"],
@@ -141,7 +140,6 @@ _CLASS_TYPES: dict[str, list[str]] = {
 }
 
 _FUNCTION_TYPES: dict[str, list[str]] = {
-    "python": ["function_definition"],
     "javascript": ["function_declaration", "method_definition", "arrow_function"],
     "typescript": ["function_declaration", "method_definition", "arrow_function"],
     "tsx": ["function_declaration", "method_definition", "arrow_function"],
@@ -174,7 +172,6 @@ _FUNCTION_TYPES: dict[str, list[str]] = {
 }
 
 _IMPORT_TYPES: dict[str, list[str]] = {
-    "python": ["import_statement", "import_from_statement"],
     "javascript": ["import_statement"],
     "typescript": ["import_statement"],
     "tsx": ["import_statement"],
@@ -198,7 +195,6 @@ _IMPORT_TYPES: dict[str, list[str]] = {
 }
 
 _CALL_TYPES: dict[str, list[str]] = {
-    "python": ["call"],
     "javascript": [
         "call_expression", "new_expression",
         "jsx_self_closing_element", "jsx_opening_element",
@@ -263,17 +259,6 @@ _TEST_ANNOTATIONS = frozenset({
 })
 
 _BUILTIN_NAMES: dict[str, frozenset[str]] = {
-    "python": frozenset({
-        "len", "str", "int", "float", "bool", "list", "dict", "set", "tuple",
-        "print", "range", "enumerate", "zip", "map", "filter", "sorted",
-        "reversed", "isinstance", "issubclass", "type", "id", "hash",
-        "hasattr", "getattr", "setattr", "delattr", "callable",
-        "repr", "abs", "min", "max", "sum", "round", "pow", "divmod",
-        "iter", "next", "open", "super", "property", "staticmethod",
-        "classmethod", "vars", "dir", "help", "input", "format",
-        "bytes", "bytearray", "memoryview", "frozenset", "complex",
-        "chr", "ord", "hex", "oct", "bin", "any", "all",
-    }),
     "rust": frozenset({
         "println", "eprintln", "format", "vec", "panic", "todo",
         "unimplemented", "unreachable", "assert", "assert_eq", "assert_ne",
@@ -2235,50 +2220,13 @@ class CodeParser:
         self, node, language: str, source: bytes, import_map: dict[str, str],
     ) -> None:
         """Extract imported names and their source modules into import_map."""
-        if language == "python":
-            if node.type == "import_from_statement":
-                # from X.Y import A, B → {A: X.Y, B: X.Y}
-                module = None
-                seen_import_keyword = False
-                for child in node.children:
-                    if child.type == "dotted_name" and not seen_import_keyword:
-                        module = child.text.decode("utf-8", errors="replace")
-                    elif child.type == "import":
-                        seen_import_keyword = True
-                    elif seen_import_keyword and module:
-                        if child.type in ("identifier", "dotted_name"):
-                            name = child.text.decode("utf-8", errors="replace")
-                            import_map[name] = module
-                        elif child.type == "aliased_import":
-                            # from X import A as B → {B: X}
-                            names = [
-                                sub.text.decode("utf-8", errors="replace")
-                                for sub in child.children
-                                if sub.type in ("identifier", "dotted_name")
-                            ]
-                            # Last name is the alias (local name)
-                            if names:
-                                import_map[names[-1]] = module
-            elif node.type == "import_statement":
-                # import json → {json: json}
-                # import os.path → {os: os.path}
-                # import X as Y → {Y: X}
-                for child in node.children:
-                    if child.type in ("dotted_name", "identifier"):
-                        mod = child.text.decode("utf-8", errors="replace")
-                        top_level = mod.split(".")[0]
-                        import_map[top_level] = mod
-                    elif child.type == "aliased_import":
-                        names = [
-                            sub.text.decode("utf-8", errors="replace")
-                            for sub in child.children
-                            if sub.type in ("identifier", "dotted_name")
-                        ]
-                        if len(names) >= 2:
-                            # import X as Y → {Y: X}
-                            import_map[names[-1]] = names[0]
+        handler = self._handlers.get(language)
+        if handler is not None and handler.collect_import_names(
+            node, "", import_map,
+        ):
+            return
 
-        elif language in ("javascript", "typescript", "tsx"):
+        if language in ("javascript", "typescript", "tsx"):
             # import { A, B } from './path' → {A: ./path, B: ./path}
             module = None
             for child in node.children:
@@ -2334,21 +2282,13 @@ class CodeParser:
         """Language-aware module-to-file resolution."""
         caller_dir = Path(file_path).parent
 
-        if language == "python":
-            rel_path = module.replace(".", "/")
-            candidates = [rel_path + ".py", rel_path + "/__init__.py"]
-            # Walk up from caller's directory to find the module file
-            current = caller_dir
-            while True:
-                for candidate in candidates:
-                    target = current / candidate
-                    if target.is_file():
-                        return str(target.resolve())
-                if current == current.parent:
-                    break
-                current = current.parent
+        handler = self._handlers.get(language)
+        if handler is not None:
+            result = handler.resolve_module(module, file_path)
+            if result is not NotImplemented:
+                return result
 
-        elif language in ("javascript", "typescript", "tsx", "vue"):
+        if language in ("javascript", "typescript", "tsx", "vue"):
             if module.startswith("."):
                 # Relative import — resolve from caller's directory
                 base = caller_dir / module
@@ -2509,13 +2449,7 @@ class CodeParser:
             if result is not NotImplemented:
                 return result
         bases = []
-        if language == "python":
-            for child in node.children:
-                if child.type == "argument_list":
-                    for arg in child.children:
-                        if arg.type in ("identifier", "attribute"):
-                            bases.append(arg.text.decode("utf-8", errors="replace"))
-        elif language in ("java", "csharp", "kotlin"):
+        if language in ("java", "csharp", "kotlin"):
             # Look for superclass/interfaces in extends/implements clauses
             for child in node.children:
                 if child.type in (
@@ -2590,18 +2524,7 @@ class CodeParser:
         imports = []
         text = node.text.decode("utf-8", errors="replace").strip()
 
-        if language == "python":
-            # import x.y.z  or  from x.y import z
-            if node.type == "import_from_statement":
-                for child in node.children:
-                    if child.type == "dotted_name":
-                        imports.append(child.text.decode("utf-8", errors="replace"))
-                        break
-            else:
-                for child in node.children:
-                    if child.type == "dotted_name":
-                        imports.append(child.text.decode("utf-8", errors="replace"))
-        elif language in ("javascript", "typescript", "tsx"):
+        if language in ("javascript", "typescript", "tsx"):
             # import ... from 'module'
             for child in node.children:
                 if child.type == "string":
