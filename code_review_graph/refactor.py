@@ -225,6 +225,15 @@ def find_dead_code(
     # Build set of class names referenced in function type annotations.
     type_ref_names = _collect_type_referenced_names(store)
 
+    # Build class hierarchy: class_qualified_name -> [bare_base_names]
+    class_bases: dict[str, list[str]] = {}
+    conn = store._conn
+    for row in conn.execute(
+        "SELECT source_qualified, target_qualified FROM edges WHERE kind = 'INHERITS'"
+    ).fetchall():
+        base = row[1].rsplit("::", 1)[-1] if "::" in row[1] else row[1]
+        class_bases.setdefault(row[0], []).append(base)
+
     dead: list[dict[str, Any]] = []
 
     for node in candidates:
@@ -283,13 +292,40 @@ def find_dead_code(
         has_subclasses = any(e.kind == "INHERITS" for e in incoming)
 
         if not has_callers and not has_test_refs and not has_importers and not has_subclasses:
-            dead.append({
-                "name": _sanitize_name(node.name),
-                "qualified_name": _sanitize_name(node.qualified_name),
-                "kind": node.kind,
-                "file": node.file_path,
-                "line": node.line_start,
-            })
+            # Check if this is a method override where the base class method
+            # has callers (polymorphic dispatch: callers of Base.method()
+            # implicitly call SubClass.method() at runtime).
+            if node.kind == "Function" and node.parent_name and not has_callers:
+                method_suffix = "." + node.name
+                if node.qualified_name.endswith(method_suffix):
+                    class_qn = node.qualified_name[: -len(method_suffix)]
+                    for base_name in class_bases.get(class_qn, []):
+                        rows = conn.execute(
+                            "SELECT n.qualified_name FROM nodes n "
+                            "WHERE n.parent_name = ? AND n.name = ? "
+                            "AND n.kind IN ('Function', 'Test')",
+                            (base_name, node.name),
+                        ).fetchall()
+                        for (base_method_qn,) in rows:
+                            if conn.execute(
+                                "SELECT 1 FROM edges "
+                                "WHERE target_qualified = ? AND kind = 'CALLS' "
+                                "LIMIT 1",
+                                (base_method_qn,),
+                            ).fetchone():
+                                has_callers = True
+                                break
+                        if has_callers:
+                            break
+
+            if not has_callers:
+                dead.append({
+                    "name": _sanitize_name(node.name),
+                    "qualified_name": _sanitize_name(node.qualified_name),
+                    "kind": node.kind,
+                    "file": node.file_path,
+                    "line": node.line_start,
+                })
 
     logger.info("find_dead_code: found %d dead symbols", len(dead))
     return dead

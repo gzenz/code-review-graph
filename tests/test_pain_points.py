@@ -676,6 +676,44 @@ class TestDeadCodeFalsePositives(_GraphTestBase):
             "Interface implementation flagged as dead code"
         )
 
+    def test_override_not_dead_when_parent_method_has_qualified_callers(self):
+        """When base class method has qualified CALLS edges, subclass overrides
+        should not be flagged as dead. This is the real-world case: self.sync()
+        in BaseConnector.run() resolves to base.py::BaseConnector.sync, and
+        EgymConnector.sync (an override) has zero direct callers.
+        """
+        # Base class with sync() method in base.py
+        self._add_class("BaseConnector", path="/repo/base.py")
+        self._add_func("sync", path="/repo/base.py", parent="BaseConnector")
+        self._add_func(
+            "run", path="/repo/base.py", parent="BaseConnector",
+            line_start=20, line_end=30,
+        )
+        # run() calls self.sync() -> resolves to qualified BaseConnector.sync
+        self._add_edge(
+            "CALLS",
+            "/repo/base.py::BaseConnector.run",
+            "/repo/base.py::BaseConnector.sync",
+            path="/repo/base.py",
+        )
+        # Subclass EgymConnector overrides sync()
+        self._add_class("EgymConnector", path="/repo/egym.py")
+        self._add_func("sync", path="/repo/egym.py", parent="EgymConnector")
+        # INHERITS edge
+        self._add_edge(
+            "INHERITS",
+            "/repo/egym.py::EgymConnector",
+            "BaseConnector",
+            path="/repo/egym.py",
+        )
+
+        dead = find_dead_code(self.store)
+        dead_qns = {d["qualified_name"] for d in dead}
+        # EgymConnector.sync overrides BaseConnector.sync which has callers
+        assert "/repo/egym.py::EgymConnector.sync" not in dead_qns, (
+            "Override of called parent method flagged as dead code"
+        )
+
     @pytest.mark.xfail(
         reason="callers_of can't reverse-trace bare name 'sync' to SleepSyncer.sync"
     )

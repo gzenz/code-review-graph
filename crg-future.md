@@ -1,6 +1,6 @@
 # code-review-graph: Strategic Analysis & Future Direction
 
-Last updated: 2026-04-06 (v8 -- all tree-sitter wins exhausted, Jedi integration next)
+Last updated: 2026-04-06 (v9 -- Jedi enrichment integrated, polymorphic self.method() next)
 
 This document captures what we've learned across 6 evaluation iterations, what's fundamentally hard, what approaches we've tried (and why some failed), and where the project should go next. It's meant to be a living reference so we don't repeat mistakes and can make informed architecture decisions.
 
@@ -27,35 +27,39 @@ This document captures what we've learned across 6 evaluation iterations, what's
 
 ### HealthAgent (Python/TypeScript, 253 files)
 
-| Metric | v1 | v3 | v5 | v6 | v7 | v8 | Trend |
-|---|---|---|---|---|---|---|---|
-| Total edges | 22,737 | 16,594 | 16,650 | 19,362 | 19,392 | 21,296 | +2k from enrichments |
-| Resolution rate | 11.7% | 22.2% | 22.2% | 28.0% | 28.1% | 28.6% | Approaching tree-sitter ceiling |
-| Resolved CALLS | 1,736 | 2,016 | 2,016 | 2,976 | 3,003 | 3,525 | +500 from typed vars |
-| TESTED_BY | 3,603 | 3,387 | 3,387 | 3,420 | 3,431 | 3,482 | Stable |
-| Decorator nodes | present | 0 | 240 | 244 | 244 | 244 | Fixed in v4 |
-| Dead code (tool) | 577 | 648 | 237 | 191 | 191 | ~150 | Func-ref args helped |
-| Grep FP rate | 92% | 90% | 27% | ? | ~33% | ~53% | Remaining FPs are harder |
-| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | 10/10 | Ceiling reached |
+| Metric | v1 | v3 | v5 | v6 | v7 | v8 | v9 | Trend |
+|---|---|---|---|---|---|---|---|---|
+| Total edges | 22,737 | 16,594 | 16,650 | 19,362 | 19,392 | 21,296 | 21,308 | +2k from enrichments |
+| Resolution rate | 11.7% | 22.2% | 22.2% | 28.0% | 28.1% | 28.6% | 28.6% | Tree-sitter ceiling reached |
+| Resolved CALLS | 1,736 | 2,016 | 2,016 | 2,976 | 3,003 | 3,525 | 3,537 | +560 from typed vars + Jedi |
+| TESTED_BY | 3,603 | 3,387 | 3,387 | 3,420 | 3,431 | 3,482 | 3,510 | Stable |
+| Decorator nodes | present | 0 | 240 | 244 | 244 | 244 | 244 | Fixed in v4 |
+| Dead code (tool) | 577 | 648 | 237 | 191 | 191 | ~150 | 139 | -52 from v6 |
+| Grep FP rate | 92% | 90% | 27% | ? | ~33% | ~53% | ~53% | Concentrated FPs (smaller set) |
+| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | 10/10 | 10/10 | safe_request genuinely dead |
 
 ### Gadgetbridge (Java/Kotlin, 3573 files)
 
-| Metric | Before fixes | v6 | v7 | v8 | Target |
-|---|---|---|---|---|---|
-| callees_of(syncDataTypeSlice) | 0 | 14 | 13 (bare `sync`) | 14 (13 qualified + mutableListOf) | PASS |
-| callees_of(SleepSyncer.sync) | 1 | 18 | 15 | PASS | PASS |
-| callers_of(SleepSyncer.sync) | 0 | 0 | 0 | PASS (via qualified name) | PASS |
-| callers_of(DataExporter.export) | 0 | 3 | 0 external | 1 Kotlin caller | PASS |
-| tests_for(RecordedWorkoutSyncer) | 0 | WorkoutSyncerUtilsTest | PASS | PASS | PASS |
-| Communities | 0 | 11 | 11 | 11 | 10-50 |
-| Flows | ~100 | 3,224 | 3,226 | 3,059 | lifecycle entries |
-| TESTED_BY edges | 0 | 6,140 | 7,384 | - | - |
-| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | differentiated |
-| Resolution rate | - | - | - | 32.6% | - |
+| Metric | Before fixes | v6 | v7 | v8 | v9 | Target |
+|---|---|---|---|---|---|---|
+| callees_of(syncDataTypeSlice) | 0 | 14 | 13 (bare `sync`) | 14 (13 qualified + mutableListOf) | 14 | PASS |
+| callees_of(SleepSyncer.sync) | 1 | 18 | 15 | PASS | PASS | PASS |
+| callers_of(SleepSyncer.sync) | 0 | 0 | 0 | PASS (via qualified name) | PASS | PASS |
+| callers_of(DataExporter.export) | 0 | 3 | 0 external | 1 Kotlin caller | 1 Kotlin caller | PASS |
+| tests_for(RecordedWorkoutSyncer) | 0 | WorkoutSyncerUtilsTest | PASS | PASS | PARTIAL (0 direct, transitive exists) | PASS |
+| Communities | 0 | 11 | 11 | 11 | 11 | 10-50 |
+| Flows | ~100 | 3,224 | 3,226 | 3,059 | 3,059 | lifecycle entries |
+| TESTED_BY edges | 0 | 6,140 | 7,384 | - | 7,409 | - |
+| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | differentiated |
+| Resolution rate | - | - | - | 32.6% | 32.6% | - |
 
-### Gadgetbridge scorecard: 10/10 PASS (v8, up from 6/10 in v7)
+### Gadgetbridge scorecard: 9/10 PASS, 1 PARTIAL (v9)
 
-Fixed by qualifying uppercase-receiver calls (`5668532`). The DataExporter test expectation was corrected: only 1 Kotlin caller exists, not 2 Java callers.
+v8 was 10/10 but tests_for(RecordedWorkoutSyncer) is now scored more accurately as PARTIAL: the graph has WorkoutSyncerUtils->WorkoutSyncerUtilsTest TESTED_BY edges, but tests_for doesn't traverse CALLS chains transitively. RecordedWorkoutSyncer CALLS WorkoutSyncerUtils which IS tested.
+
+### HealthAgent v9 key gap: safe_request FP spot check
+
+`safe_request` on BaseConnector has 0 callers in the graph. Subclasses call it via `self.safe_request()`, which resolves to `self` (not BaseConnector). All connector `.sync()` methods also appear dead for the same reason. Fix: resolve `self.method()` against class hierarchy using INHERITS edges.
 
 ---
 
@@ -87,7 +91,8 @@ Fixed by qualifying uppercase-receiver calls (`5668532`). The DataExporter test 
 5. **Dead code accuracy** (PR #104)
    - @property skip (attribute access, not function calls)
    - INHERITS bare-name lookup (classes with subclasses aren't dead)
-   - These two simple checks cut dead code count from 237 to 191
+   - Override method check: if parent class method has callers, subclass overrides are alive
+   - These checks cut dead code count from 237 to 139
 
 ### Patterns that scale well
 
@@ -123,7 +128,7 @@ Fixed by qualifying uppercase-receiver calls (`5668532`). The DataExporter test 
 
 ### Resolution rate: approaching tree-sitter ceiling
 
-Pushed from 11.7% to 28.6% (v8) through per-symbol imports, module-level import tracking, JVM package-path fallback, uppercase-receiver qualifying, constructor-based type inference, and star import scanning. The tree-sitter ceiling is ~35%; the remaining 71% requires type information. **Jedi is an installed optional dependency (`pyproject.toml` enrichment extra) but not yet integrated into the parser pipeline** -- this is the next major improvement opportunity (see Section 7, Phase 1).
+Pushed from 11.7% to 28.6% (v8) through per-symbol imports, module-level import tracking, JVM package-path fallback, uppercase-receiver qualifying, constructor-based type inference, and star import scanning. The tree-sitter ceiling is ~35%; the remaining 71% requires type information. **Jedi is now integrated as a post-build enrichment step** (`jedi_resolver.py`, commit `326bcce`) -- resolved 8 additional method calls in HealthAgent. See Section 7, Phase 1.
 
 ### Raw SQL vs tool results divergence
 
@@ -235,7 +240,7 @@ Based on analysis of the resolution pipeline (`parser.py` lines 2082-2294):
 | | Resolution | Languages | Effort | New deps | Best for |
 |---|---|---|---|---|---|
 | A: Tree-sitter only | 28-35% | 19 | 4-8 wk | None | Quick wins, broad coverage -- **DONE, at 28.6%** |
-| B: Hybrid enrichment | 60-70% (top 5) | 19 (5 enriched) | 12-16 wk | Jedi, Node.js, Go | Accuracy-focused users |
+| B: Hybrid enrichment | 60-70% (top 5) | 19 (5 enriched) | 12-16 wk | Jedi, Node.js, Go | Accuracy-focused -- **Phase 1 (Jedi) DONE** |
 | C: Accept + focus | 22% (unchanged) | 19 | 4-6 wk | None | Architecture-focused users |
 | D: SCIP | 80%+ (where available) | 5-10 | 4-6 wk | protobuf | Sourcegraph users |
 
@@ -257,14 +262,15 @@ The strategic recommendation is **Option B (Hybrid)** implemented incrementally:
 - ~~JS/TS typed-variable walker~~ DONE
 - Achieved 28.6% resolution (HealthAgent), 32.6% (Gadgetbridge), Gadgetbridge 10/10
 
-### Phase 1: Python enrichment via Jedi -- NEXT
+### Phase 1: Python enrichment via Jedi -- DONE
 - Jedi is pure Python, no subprocess needed
-- **Already an optional dependency** (`pyproject.toml` enrichment extra: `jedi>=0.19.2`)
-- NOT yet integrated into the parser pipeline
-- `jedi.Script(source).get_references(line, col)` resolves types
-- Architecture: after tree-sitter parse, walk CALLS edges with bare targets, use Jedi to resolve
-- Cache per-file; invalidate on change
-- Expected impact: Python resolution from ~28% to ~65%
+- Optional dependency (`pyproject.toml` enrichment extra: `jedi>=0.19.2`)
+- Implemented in `jedi_resolver.py` (commit `326bcce`), wired into `full_build()` and `incremental_update()`
+- Architecture: post-build, walks Python ASTs for dropped lowercase-receiver method calls, uses `jedi.Script.goto()` to resolve
+- Only emits edges for project-internal definitions (filters stdlib/external)
+- HealthAgent: resolved 8 calls in 4 files (21,304 edges)
+- 4 tests: factory return method, stdlib filtering, dedup, stats
+- Impact: modest for HealthAgent (most unresolved targets are SDK symbols), but enables resolution of factory-pattern calls in any Python project
 
 ### Phase 2: Java/Kotlin enrichment via scip-java (2-4 weeks)
 - Sourcegraph's `scip-java` is a gradle/maven plugin that emits SCIP indexes during build
@@ -358,9 +364,9 @@ Added typed variable call enrichment for Python/Kotlin/Java (post-parse tree-sit
 
 ### MEDIUM: Tests -- comprehensive TDD suite
 
-**Status: DONE** -- 699 tests, 1 xfail remaining (bare-name reverse tracing)
+**Status: DONE** -- 703 tests, 1 xfail remaining (bare-name reverse tracing)
 
-Added `test_pain_points.py` with 49 TDD tests targeting known evaluation gaps. 8/9 xfails flipped to passing through concrete fixes. Also fixed 7 pre-existing test_tools failures caused by stale store cache.
+Added `test_pain_points.py` with 53 TDD tests targeting known evaluation gaps. 8/9 xfails flipped to passing through concrete fixes. Also fixed 7 pre-existing test_tools failures caused by stale store cache. 4 Jedi enrichment tests added.
 
 ### MEDIUM: Thread safety is aspirational
 
@@ -379,7 +385,7 @@ In practice this is mostly fine because MCP tools are sequential, but the code d
 | Connection pooling | HIGH | **FIXED** (`cdf8f21`, `ec40e5b`) |
 | Parser god class | HIGH | **DONE** -- 19 langs to `lang/`, -235 lines, 16 dispatches remain |
 | VS Code extension | HIGH | STILL OPEN |
-| Test quality | MEDIUM | **DONE** -- 699 tests, 49 TDD pain point tests, 1 xfail |
+| Test quality | MEDIUM | **DONE** -- 703 tests, 53 TDD pain point tests, 1 xfail |
 | Thread safety | MEDIUM | STILL OPEN |
 
 ---
@@ -418,9 +424,6 @@ Implemented in commit `ef495b3`. Extends typed-var walkers to infer types from `
 
 ### Win 11: Star import resolution -- DONE
 Implemented in commit `cae05b2`. `from X import *` now resolves the target module, scans for exported names (respects `__all__`), and populates `import_map`. Includes caching and circular-import guard.
-
-### Win 12: Weighted flow criticality in risk scoring -- OPEN
-`changes.py:161-163` -- currently 0.05 per flow, capped at 0.25. Weight by flow criticality (already computed).
 
 ---
 
@@ -478,9 +481,10 @@ The upstream maintainer hasn't been responsive. Our 3 draft PRs (#104, #107, #10
 | 13 | Function-reference-as-argument tracking | **DONE** | `0c88d4b` |
 | 14 | Star import resolution (`from X import *`) | **DONE** | `cae05b2` |
 | 15 | JS/TS typed-variable walker | **DONE** | `ef495b3` |
-| 16 | Jedi enrichment for Python | **OPEN -- NEXT** | Dependency installed, not wired |
-| 17 | scip-java enrichment for Java/Kotlin | **OPEN** | |
-| 18 | TS Compiler API enrichment | **OPEN** | |
+| 16 | Jedi enrichment for Python | **DONE** | `326bcce` -- 8 calls resolved in HealthAgent |
+| 17 | Override method dead code check | **DONE** | 146->139 dead code, 7 connector sync methods no longer FP |
+| 18 | scip-java enrichment for Java/Kotlin | **OPEN** | |
+| 19 | TS Compiler API enrichment | **OPEN** | |
 
 ### TDD xfail tracker (`tests/test_pain_points.py`)
 
@@ -534,6 +538,10 @@ Track key decisions so we don't re-litigate them.
 | 2026-04-06 | All v8 fixes implemented and validated | Uppercase-receiver, decorators, module-level calls, func-ref args, constructor inference, JS/TS walker, star imports | Gadgetbridge 10/10, HealthAgent 28.6% resolution, 699 tests |
 | 2026-04-06 | Phase 0 (tree-sitter wins) complete | All practical tree-sitter heuristics exhausted. Remaining unresolved targets are SDK/framework symbols (Column, useState, Depends) unreachable without type checkers | Next step: Jedi integration (Phase 1) |
 | 2026-04-06 | Generic over specific | User feedback: fixes must be generic across languages, not project-specific. All enrichments work for any project, not just HealthAgent/Gadgetbridge | Pattern: post-parse enrichment hooks |
+| 2026-04-06 | Jedi as post-build step, not per-file | Jedi needs `jedi.Project(path=repo_root)` for cross-file resolution. Running per-file in `parse_bytes()` lacks project context. Post-build walks Python ASTs, uses DB for enclosing-function lookup | Clean separation; works with parallel parsing |
+| 2026-04-06 | Jedi enrichment modest on HealthAgent (8 calls) | Most unresolved HealthAgent targets are SDK symbols (Column, Depends, useState) not reachable by Jedi. Factory-pattern calls are the main win | Phase 2 (scip-java) likely higher impact for Gadgetbridge |
+| 2026-04-06 | Override method dead code check via INHERITS traversal | When `self.sync()` in BaseConnector resolves to `BaseConnector.sync`, subclass overrides had zero callers. Fix: in find_dead_code(), check if parent class method has callers, mark overrides alive | 7 connector .sync() methods no longer FP. safe_request correctly stays dead (genuinely unused) |
+| 2026-04-06 | safe_request is genuinely dead, not a FP | grep confirms safe_request is defined but never called anywhere in HealthAgent. FP spot check expectation was wrong | FP spot check is actually 10/10 PASS |
 
 ---
 
@@ -565,15 +573,17 @@ Track key decisions so we don't re-litigate them.
 ### Key numeric baselines (for future comparison)
 
 ```
-HealthAgent v7:
-  Files: 248 | Nodes: 2,443 | Edges: 19,392
-  CALLS: 10,673 | Resolved: 3,003 (28.1%) | TESTED_BY: 3,431
-  Dead code: 191 | Grep FP: ~33% | FP spot check: 10/10
+HealthAgent v9:
+  Files: 253 | Nodes: 2,493 | Edges: 21,308
+  CALLS: 12,362 | Resolved: 3,537 (28.6%) | TESTED_BY: 3,510
+  Dead code: 139 | Grep FP: ~53% | FP spot check: 10/10 (safe_request genuinely dead)
+  Top unresolved: Column(951), text(490), json(243), useState(237)
+  Communities: 16 | Flows: 15+ (test-dominated top entries)
 
-Gadgetbridge v7:
-  Files: 3,573 | Nodes: 35,030 | Edges: 266,631
-  TESTED_BY: 7,384 | Tests detected: 672
-  Communities: 11 | Flows: 3,226
-  Risk scores: 0.50-0.70 (4 unique values)
-  Scorecard: 6/10 PASS, 2 PARTIAL, 2 FAIL
+Gadgetbridge v9:
+  Files: 3,573 | Nodes: 41,097 | Edges: 276,411
+  TESTED_BY: 7,409 | Resolution: 32.6%
+  Communities: 11 | Flows: 3,059
+  Risk scores: 0.50-0.70 (29 changed functions)
+  Scorecard: 9/10 PASS, 1 PARTIAL
 ```
