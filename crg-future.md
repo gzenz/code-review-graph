@@ -341,9 +341,9 @@ The module cache (`_MODULE_CACHE_MAX = 15,000`) clears ALL entries at once when 
 1. ~~DRY TESTED_BY generation~~ -- DONE (`d226689`)
 2. ~~LanguageHandler protocol + registry~~ -- DONE (`a0850b7`)
 3. ~~Go handler proof of concept~~ -- DONE (`a0850b7`) -- also fixed embedded struct detection bug
+4. ~~Python handler~~ -- DONE (`db3b1bb`) -- parser.py -77 lines
 
 **Next**:
-4. Extract Python handler (most complex, most used)
 5. Extract JS/TS handler (second most used)
 6. Extract remaining languages in batches (JVM, C-family, scripting)
 7. Remove dispatch branches from `CodeParser`, delegate to registry

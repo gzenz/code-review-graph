@@ -110,9 +110,6 @@ EXTENSION_TO_LANGUAGE: dict[str, str] = {
 # Tree-sitter node type mappings per language
 # Maps (language) -> dict of semantic role -> list of TS node types
 _CLASS_TYPES: dict[str, list[str]] = {
-    "javascript": ["class_declaration", "class"],
-    "typescript": ["class_declaration", "class"],
-    "tsx": ["class_declaration", "class"],
     "rust": ["struct_item", "enum_item", "impl_item"],
     "java": ["class_declaration", "interface_declaration", "enum_declaration"],
     "c": ["struct_specifier", "type_definition"],
@@ -140,9 +137,6 @@ _CLASS_TYPES: dict[str, list[str]] = {
 }
 
 _FUNCTION_TYPES: dict[str, list[str]] = {
-    "javascript": ["function_declaration", "method_definition", "arrow_function"],
-    "typescript": ["function_declaration", "method_definition", "arrow_function"],
-    "tsx": ["function_declaration", "method_definition", "arrow_function"],
     "rust": ["function_item"],
     "java": ["method_declaration", "constructor_declaration"],
     "c": ["function_definition"],
@@ -172,9 +166,6 @@ _FUNCTION_TYPES: dict[str, list[str]] = {
 }
 
 _IMPORT_TYPES: dict[str, list[str]] = {
-    "javascript": ["import_statement"],
-    "typescript": ["import_statement"],
-    "tsx": ["import_statement"],
     "rust": ["use_declaration"],
     "java": ["import_declaration"],
     "c": ["preproc_include"],
@@ -195,15 +186,6 @@ _IMPORT_TYPES: dict[str, list[str]] = {
 }
 
 _CALL_TYPES: dict[str, list[str]] = {
-    "javascript": [
-        "call_expression", "new_expression",
-        "jsx_self_closing_element", "jsx_opening_element",
-    ],
-    "typescript": ["call_expression", "new_expression"],
-    "tsx": [
-        "call_expression", "new_expression",
-        "jsx_self_closing_element", "jsx_opening_element",
-    ],
     "rust": ["call_expression", "macro_invocation"],
     "java": ["method_invocation", "object_creation_expression"],
     "c": ["call_expression"],
@@ -2479,13 +2461,6 @@ class CodeParser:
                     for sub in child.children:
                         if sub.type == "type_identifier":
                             bases.append(sub.text.decode("utf-8", errors="replace"))
-        elif language in ("typescript", "javascript", "tsx"):
-            # extends clause
-            for child in node.children:
-                if child.type in ("extends_clause", "implements_clause"):
-                    for sub in child.children:
-                        if sub.type in ("identifier", "type_identifier", "nested_identifier"):
-                            bases.append(sub.text.decode("utf-8", errors="replace"))
         elif language == "solidity":
             # contract Foo is Bar, Baz { ... }
             for child in node.children:
@@ -2524,13 +2499,7 @@ class CodeParser:
         imports = []
         text = node.text.decode("utf-8", errors="replace").strip()
 
-        if language in ("javascript", "typescript", "tsx"):
-            # import ... from 'module'
-            for child in node.children:
-                if child.type == "string":
-                    val = child.text.decode("utf-8", errors="replace").strip("'\"")
-                    imports.append(val)
-        elif language == "rust":
+        if language == "rust":
             # use crate::module::item
             imports.append(text.replace("use ", "").rstrip(";").strip())
         elif language in ("c", "cpp"):
