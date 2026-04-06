@@ -404,25 +404,8 @@ class CodeParser:
         # Resolve bare call targets to qualified names using same-file definitions
         edges = self._resolve_call_targets(nodes, edges, file_path_str)
 
-        # Generate TESTED_BY edges: when a test function calls a production
-        # function, record that the production function is tested.
-        # Convention: source=test_func, target=production_func so that
-        # get_edges_by_target(production_qn) finds the testing relationship.
         if test_file:
-            test_qnames = set()
-            for n in nodes:
-                if n.is_test:
-                    qn = self._qualify(n.name, n.file_path, n.parent_name)
-                    test_qnames.add(qn)
-            for edge in list(edges):
-                if edge.kind == "CALLS" and edge.source in test_qnames:
-                    edges.append(EdgeInfo(
-                        kind="TESTED_BY",
-                        source=edge.source,
-                        target=edge.target,
-                        file_path=edge.file_path,
-                        line=edge.line,
-                    ))
+            self._generate_tested_by(nodes, edges)
 
         return nodes, edges
 
@@ -520,20 +503,7 @@ class CodeParser:
 
         # Generate TESTED_BY edges
         if test_file:
-            test_qnames = set()
-            for n in all_nodes:
-                if n.is_test:
-                    qn = self._qualify(n.name, n.file_path, n.parent_name)
-                    test_qnames.add(qn)
-            for edge in list(all_edges):
-                if edge.kind == "CALLS" and edge.source in test_qnames:
-                    all_edges.append(EdgeInfo(
-                        kind="TESTED_BY",
-                        source=edge.source,
-                        target=edge.target,
-                        file_path=edge.file_path,
-                        line=edge.line,
-                    ))
+            self._generate_tested_by(all_nodes, all_edges)
 
         return all_nodes, all_edges
 
@@ -735,20 +705,7 @@ class CodeParser:
 
         # Generate TESTED_BY edges
         if test_file:
-            test_qnames = set()
-            for n in all_nodes:
-                if n.is_test:
-                    qn = self._qualify(n.name, n.file_path, n.parent_name)
-                    test_qnames.add(qn)
-            for edge in list(all_edges):
-                if edge.kind == "CALLS" and edge.source in test_qnames:
-                    all_edges.append(EdgeInfo(
-                        kind="TESTED_BY",
-                        source=edge.source,
-                        target=edge.target,
-                        file_path=edge.file_path,
-                        line=edge.line,
-                    ))
+            self._generate_tested_by(all_nodes, all_edges)
 
         return all_nodes, all_edges
 
@@ -849,6 +806,31 @@ class CodeParser:
                 break
 
         return nodes, edges
+
+    def _generate_tested_by(
+        self, nodes: list[NodeInfo], edges: list[EdgeInfo],
+    ) -> None:
+        """Append TESTED_BY edges for every CALLS edge from a test function.
+
+        Convention: source=test_func, target=production_func so that
+        ``get_edges_by_target(production_qn)`` finds the testing relationship.
+        Mutates *edges* in place.
+        """
+        test_qnames: set[str] = set()
+        for n in nodes:
+            if n.is_test:
+                test_qnames.add(
+                    self._qualify(n.name, n.file_path, n.parent_name)
+                )
+        for edge in list(edges):
+            if edge.kind == "CALLS" and edge.source in test_qnames:
+                edges.append(EdgeInfo(
+                    kind="TESTED_BY",
+                    source=edge.source,
+                    target=edge.target,
+                    file_path=edge.file_path,
+                    line=edge.line,
+                ))
 
     def _resolve_call_targets(
         self,
