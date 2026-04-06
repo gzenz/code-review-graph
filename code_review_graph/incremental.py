@@ -312,6 +312,16 @@ def _parse_single_file(
         return (rel_path, [], [], str(e), "")
 
 
+def _run_jedi_enrichment(store: GraphStore, repo_root: Path) -> dict:
+    """Run optional Jedi enrichment for Python method calls."""
+    try:
+        from .jedi_resolver import enrich_jedi_calls
+        return enrich_jedi_calls(store, repo_root)
+    except Exception as e:
+        logger.warning("Jedi enrichment failed: %s", e)
+        return {"error": str(e)}
+
+
 def full_build(repo_root: Path, store: GraphStore) -> dict:
     """Full rebuild of the entire graph."""
     parser = CodeParser()
@@ -370,6 +380,9 @@ def full_build(repo_root: Path, store: GraphStore) -> dict:
                 if i % 200 == 0 or i == file_count:
                     logger.info("Progress: %d/%d files parsed", i, file_count)
 
+    # Post-parse Jedi enrichment for Python method calls
+    jedi_stats = _run_jedi_enrichment(store, repo_root)
+
     store.set_metadata("last_updated", time.strftime("%Y-%m-%dT%H:%M:%S"))
     store.set_metadata("last_build_type", "full")
     branch, sha = _git_branch_info(repo_root)
@@ -384,6 +397,7 @@ def full_build(repo_root: Path, store: GraphStore) -> dict:
         "total_nodes": total_nodes,
         "total_edges": total_edges,
         "errors": errors,
+        "jedi": jedi_stats,
     }
 
 
@@ -486,6 +500,9 @@ def incremental_update(
                 total_nodes += len(nodes)
                 total_edges += len(edges)
 
+    # Post-parse Jedi enrichment for Python method calls
+    jedi_stats = _run_jedi_enrichment(store, repo_root)
+
     store.set_metadata("last_updated", time.strftime("%Y-%m-%dT%H:%M:%S"))
     store.set_metadata("last_build_type", "incremental")
     branch, sha = _git_branch_info(repo_root)
@@ -502,6 +519,7 @@ def incremental_update(
         "changed_files": list(changed_files),
         "dependent_files": list(dependent_files),
         "errors": errors,
+        "jedi": jedi_stats,
     }
 
 

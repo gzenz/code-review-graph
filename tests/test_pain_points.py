@@ -1023,3 +1023,203 @@ class TestParserFixtureIntegration:
         assert any("::UserRepository" in t for t in import_targets), (
             f"Expected ::UserRepository import, got: {import_targets}"
         )
+
+
+# ===================================================================
+# 6. Jedi post-build enrichment -- cross-file method calls
+# ===================================================================
+
+
+class TestJediEnrichment:
+    """Test Jedi-based resolution of method calls the parser drops.
+
+    When code calls ``svc.method()`` and ``svc`` came from a factory function
+    (lowercase receiver, no type annotation), the tree-sitter parser drops the
+    call.  Jedi can trace the return type and resolve it.
+    """
+
+    def test_jedi_resolves_factory_return_method(self, tmp_path):
+        """svc = create_service(); svc.authenticate() should resolve via Jedi."""
+        from code_review_graph.jedi_resolver import enrich_jedi_calls
+
+        # Use a clean directory name to avoid _is_test_file matching pytest names
+        import tempfile
+        proj = Path(tempfile.mkdtemp(prefix="proj_"))
+        try:
+            self._run_factory_test(proj)
+        finally:
+            import shutil
+            shutil.rmtree(proj, ignore_errors=True)
+
+    def _run_factory_test(self, proj):
+        from code_review_graph.jedi_resolver import enrich_jedi_calls
+
+        # Create package structure
+        helpers = proj / "helpers"
+        helpers.mkdir()
+        (helpers / "__init__.py").write_text("")
+        (helpers / "auth.py").write_text(
+            "class AuthService:\n"
+            "    def authenticate(self, token):\n"
+            "        return True\n\n"
+            "def create_auth_service():\n"
+            "    return AuthService()\n"
+        )
+        (proj / "app.py").write_text(
+            "from helpers.auth import create_auth_service\n\n"
+            "def login(token):\n"
+            "    svc = create_auth_service()\n"
+            "    return svc.authenticate(token)\n"
+        )
+
+        # Build graph
+        parser = CodeParser()
+        store = GraphStore(str(proj / "graph.db"))
+        try:
+            for f in [helpers / "__init__.py", helpers / "auth.py", proj / "app.py"]:
+                source = f.read_bytes()
+                nodes, edges = parser.parse_bytes(f, source)
+                store.store_file_nodes_edges(str(f), nodes, edges)
+            store.commit()
+
+            # Before Jedi: no CALLS edge to authenticate from login
+            app_path = str(proj / "app.py")
+            login_qn = f"{app_path}::login"
+            edges_before = store.get_edges_by_source(login_qn)
+            auth_before = [
+                e for e in edges_before
+                if e.kind == "CALLS" and "authenticate" in e.target_qualified
+            ]
+            assert not auth_before, (
+                "Parser should have dropped lowercase-receiver call"
+            )
+
+            # Run Jedi enrichment
+            stats = enrich_jedi_calls(store, proj)
+            assert stats.get("resolved", 0) >= 1
+
+            # After Jedi: should have a resolved CALLS edge
+            edges_after = store.get_edges_by_source(login_qn)
+            auth_after = [
+                e for e in edges_after
+                if e.kind == "CALLS" and "authenticate" in e.target_qualified
+            ]
+            assert len(auth_after) >= 1, (
+                f"Expected Jedi to resolve svc.authenticate(), got: "
+                f"{[e.target_qualified for e in edges_after]}"
+            )
+            # Target should be fully qualified with file path
+            target = auth_after[0].target_qualified
+            assert "auth.py" in target, f"Expected file path in target, got: {target}"
+            assert "AuthService" in target, f"Expected class name in target, got: {target}"
+        finally:
+            store.close()
+
+    def test_jedi_skips_stdlib_calls(self, tmp_path):
+        """list.append(), str.upper() etc should NOT create edges."""
+        from code_review_graph.jedi_resolver import enrich_jedi_calls
+
+        import tempfile
+        proj = Path(tempfile.mkdtemp(prefix="proj_"))
+        try:
+            (proj / "main.py").write_text(
+                "def process():\n"
+                "    items = []\n"
+                "    items.append(1)\n"
+                "    name = 'hello'\n"
+                "    return name.upper()\n"
+            )
+
+            parser = CodeParser()
+            store = GraphStore(str(proj / "graph.db"))
+            try:
+                f = proj / "main.py"
+                nodes, edges = parser.parse_bytes(f, f.read_bytes())
+                store.store_file_nodes_edges(str(f), nodes, edges)
+                store.commit()
+
+                stats = enrich_jedi_calls(store, proj)
+                assert stats.get("resolved", 0) == 0
+            finally:
+                store.close()
+        finally:
+            import shutil
+            shutil.rmtree(proj, ignore_errors=True)
+
+    def test_jedi_no_duplicate_edges(self, tmp_path):
+        """If typed-var enrichment already resolved a call, Jedi should skip it."""
+        from code_review_graph.jedi_resolver import enrich_jedi_calls
+
+        import tempfile
+        proj = Path(tempfile.mkdtemp(prefix="proj_"))
+        try:
+            (proj / "service.py").write_text(
+                "class AuthService:\n"
+                "    def authenticate(self, token):\n"
+                "        return True\n"
+            )
+            (proj / "app.py").write_text(
+                "from service import AuthService\n\n"
+                "def login(token):\n"
+                "    svc = AuthService()\n"
+                "    return svc.authenticate(token)\n"
+            )
+
+            parser = CodeParser()
+            store = GraphStore(str(proj / "graph.db"))
+            try:
+                for f in [proj / "service.py", proj / "app.py"]:
+                    nodes, edges = parser.parse_bytes(f, f.read_bytes())
+                    store.store_file_nodes_edges(str(f), nodes, edges)
+                store.commit()
+
+                app_path = str(proj / "app.py")
+                login_qn = f"{app_path}::login"
+                edges_before = store.get_edges_by_source(login_qn)
+                auth_before = [
+                    e for e in edges_before
+                    if e.kind == "CALLS" and "authenticate" in e.target_qualified
+                ]
+                count_before = len(auth_before)
+
+                stats = enrich_jedi_calls(store, proj)
+
+                edges_after = store.get_edges_by_source(login_qn)
+                auth_after = [
+                    e for e in edges_after
+                    if e.kind == "CALLS" and "authenticate" in e.target_qualified
+                ]
+                assert len(auth_after) <= count_before + 1, (
+                    "Jedi should not create duplicate edges"
+                )
+            finally:
+                store.close()
+        finally:
+            import shutil
+            shutil.rmtree(proj, ignore_errors=True)
+
+    def test_jedi_returns_stats(self, tmp_path):
+        """Enrichment should return meaningful stats."""
+        from code_review_graph.jedi_resolver import enrich_jedi_calls
+
+        import tempfile
+        proj = Path(tempfile.mkdtemp(prefix="proj_"))
+        try:
+            (proj / "empty.py").write_text("x = 1\n")
+
+            parser = CodeParser()
+            store = GraphStore(str(proj / "graph.db"))
+            try:
+                f = proj / "empty.py"
+                nodes, edges = parser.parse_bytes(f, f.read_bytes())
+                store.store_file_nodes_edges(str(f), nodes, edges)
+                store.commit()
+
+                stats = enrich_jedi_calls(store, proj)
+                assert "resolved" in stats
+                assert isinstance(stats["resolved"], int)
+            finally:
+                store.close()
+        finally:
+            import shutil
+            shutil.rmtree(proj, ignore_errors=True)
