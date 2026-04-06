@@ -12,11 +12,14 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import TYPE_CHECKING, NamedTuple, Optional
 
 import tree_sitter_language_pack as tslp
 
 from .tsconfig_resolver import TsconfigResolver
+
+if TYPE_CHECKING:
+    from .lang import BaseLanguageHandler
 
 
 class CellInfo(NamedTuple):
@@ -111,7 +114,6 @@ _CLASS_TYPES: dict[str, list[str]] = {
     "javascript": ["class_declaration", "class"],
     "typescript": ["class_declaration", "class"],
     "tsx": ["class_declaration", "class"],
-    "go": ["type_declaration"],
     "rust": ["struct_item", "enum_item", "impl_item"],
     "java": ["class_declaration", "interface_declaration", "enum_declaration"],
     "c": ["struct_specifier", "type_definition"],
@@ -143,7 +145,6 @@ _FUNCTION_TYPES: dict[str, list[str]] = {
     "javascript": ["function_declaration", "method_definition", "arrow_function"],
     "typescript": ["function_declaration", "method_definition", "arrow_function"],
     "tsx": ["function_declaration", "method_definition", "arrow_function"],
-    "go": ["function_declaration", "method_declaration"],
     "rust": ["function_item"],
     "java": ["method_declaration", "constructor_declaration"],
     "c": ["function_definition"],
@@ -177,7 +178,6 @@ _IMPORT_TYPES: dict[str, list[str]] = {
     "javascript": ["import_statement"],
     "typescript": ["import_statement"],
     "tsx": ["import_statement"],
-    "go": ["import_declaration"],
     "rust": ["use_declaration"],
     "java": ["import_declaration"],
     "c": ["preproc_include"],
@@ -208,7 +208,6 @@ _CALL_TYPES: dict[str, list[str]] = {
         "call_expression", "new_expression",
         "jsx_self_closing_element", "jsx_opening_element",
     ],
-    "go": ["call_expression"],
     "rust": ["call_expression", "macro_invocation"],
     "java": ["method_invocation", "object_creation_expression"],
     "c": ["call_expression"],
@@ -275,10 +274,6 @@ _BUILTIN_NAMES: dict[str, frozenset[str]] = {
         "bytes", "bytearray", "memoryview", "frozenset", "complex",
         "chr", "ord", "hex", "oct", "bin", "any", "all",
     }),
-    "go": frozenset({
-        "len", "cap", "make", "new", "delete", "append", "copy",
-        "close", "panic", "recover", "print", "println",
-    }),
     "rust": frozenset({
         "println", "eprintln", "format", "vec", "panic", "todo",
         "unimplemented", "unreachable", "assert", "assert_eq", "assert_ne",
@@ -325,6 +320,29 @@ class CodeParser:
         self._parsers: dict[str, object] = {}
         self._module_file_cache: dict[str, Optional[str]] = {}
         self._tsconfig_resolver = TsconfigResolver()
+        self._handlers: dict[str, "BaseLanguageHandler"] = {}
+        self._register_handlers()
+
+    def _register_handlers(self) -> None:
+        from .lang import ALL_HANDLERS
+        for handler in ALL_HANDLERS:
+            self._handlers[handler.language] = handler
+
+    def _type_sets(self, language: str):
+        handler = self._handlers.get(language)
+        if handler is not None:
+            return (
+                set(handler.class_types),
+                set(handler.function_types),
+                set(handler.import_types),
+                set(handler.call_types),
+            )
+        return (
+            set(_CLASS_TYPES.get(language, [])),
+            set(_FUNCTION_TYPES.get(language, [])),
+            set(_IMPORT_TYPES.get(language, [])),
+            set(_CALL_TYPES.get(language, [])),
+        )
 
     def _get_parser(self, language: str):  # type: ignore[arg-type]
         if language not in self._parsers:
@@ -905,10 +923,7 @@ class CodeParser:
         """Recursively walk the AST and extract nodes/edges."""
         if _depth > self._MAX_AST_DEPTH:
             return
-        class_types = set(_CLASS_TYPES.get(language, []))
-        func_types = set(_FUNCTION_TYPES.get(language, []))
-        import_types = set(_IMPORT_TYPES.get(language, []))
-        call_types = set(_CALL_TYPES.get(language, []))
+        class_types, func_types, import_types, call_types = self._type_sets(language)
 
         for child in root.children:
             node_type = child.type
@@ -1871,7 +1886,8 @@ class CodeParser:
         )
 
         # Skip calls to language builtins (len, print, etc.)
-        builtins = _BUILTIN_NAMES.get(language, frozenset())
+        handler = self._handlers.get(language)
+        builtins = handler.builtin_names if handler else _BUILTIN_NAMES.get(language, frozenset())
         if call_name and call_name in builtins:
             call_name = None
 
@@ -2172,9 +2188,7 @@ class CodeParser:
         import_map: dict[str, str] = {}
         defined_names: set[str] = set()
 
-        class_types = set(_CLASS_TYPES.get(language, []))
-        func_types = set(_FUNCTION_TYPES.get(language, []))
-        import_types = set(_IMPORT_TYPES.get(language, []))
+        class_types, func_types, import_types, _ = self._type_sets(language)
 
         # Node types that wrap a class/function with decorators/annotations
         decorator_wrappers = {"decorated_definition", "decorator"}
@@ -2399,6 +2413,11 @@ class CodeParser:
 
     def _get_name(self, node, language: str, kind: str) -> Optional[str]:
         """Extract the name from a class/function definition node."""
+        handler = self._handlers.get(language)
+        if handler is not None:
+            result = handler.get_name(node, kind)
+            if result is not NotImplemented:
+                return result
         # Dart: function_signature has a return-type node before the identifier;
         # search only for 'identifier' to avoid returning the return type name.
         if language == "dart" and node.type == "function_signature":
@@ -2448,11 +2467,6 @@ class CodeParser:
                 "simple_identifier", "constant",
             ):
                 return child.text.decode("utf-8", errors="replace")
-        # For Go type declarations, look for type_spec
-        if language == "go" and node.type == "type_declaration":
-            for child in node.children:
-                if child.type == "type_spec":
-                    return self._get_name(child, language, kind)
         return None
 
     def _get_params(self, node, language: str, source: bytes) -> Optional[str]:
@@ -2489,6 +2503,11 @@ class CodeParser:
 
     def _get_bases(self, node, language: str, source: bytes) -> list[str]:
         """Extract base classes / implemented interfaces."""
+        handler = self._handlers.get(language)
+        if handler is not None:
+            result = handler.get_bases(node, source)
+            if result is not NotImplemented:
+                return result
         bases = []
         if language == "python":
             for child in node.children:
@@ -2542,17 +2561,6 @@ class CodeParser:
                             for ident in sub.children:
                                 if ident.type == "identifier":
                                     bases.append(ident.text.decode("utf-8", errors="replace"))
-        elif language == "go":
-            # Embedded structs / interface composition
-            for child in node.children:
-                if child.type == "type_spec":
-                    for sub in child.children:
-                        if sub.type in ("struct_type", "interface_type"):
-                            for field_node in sub.children:
-                                if field_node.type == "field_declaration_list":
-                                    for f in field_node.children:
-                                        if f.type == "type_identifier":
-                                            bases.append(f.text.decode("utf-8", errors="replace"))
         elif language == "dart":
             # class Foo extends Bar with Mixin implements Iface { ... }
             # AST: superclass contains type_identifier (base) and mixins (with clause);
@@ -2574,6 +2582,11 @@ class CodeParser:
 
     def _extract_import(self, node, language: str, source: bytes) -> list[str]:
         """Extract import targets as module/path strings."""
+        handler = self._handlers.get(language)
+        if handler is not None:
+            result = handler.extract_import_targets(node, source)
+            if result is not NotImplemented:
+                return result
         imports = []
         text = node.text.decode("utf-8", errors="replace").strip()
 
@@ -2594,20 +2607,6 @@ class CodeParser:
                 if child.type == "string":
                     val = child.text.decode("utf-8", errors="replace").strip("'\"")
                     imports.append(val)
-        elif language == "go":
-            for child in node.children:
-                if child.type == "import_spec_list":
-                    for spec in child.children:
-                        if spec.type == "import_spec":
-                            for s in spec.children:
-                                if s.type == "interpreted_string_literal":
-                                    val = s.text.decode("utf-8", errors="replace")
-                                    imports.append(val.strip('"'))
-                elif child.type == "import_spec":
-                    for s in child.children:
-                        if s.type == "interpreted_string_literal":
-                            val = s.text.decode("utf-8", errors="replace")
-                            imports.append(val.strip('"'))
         elif language == "rust":
             # use crate::module::item
             imports.append(text.replace("use ", "").rstrip(";").strip())

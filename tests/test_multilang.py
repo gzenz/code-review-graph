@@ -45,6 +45,88 @@ class TestGoParsing:
         assert len(contains) >= 3
 
 
+class TestGoHandler:
+    """Unit tests for GoHandler in isolation."""
+
+    def setup_method(self):
+        from code_review_graph.lang._go import GoHandler
+        self.handler = GoHandler()
+
+    def test_constants(self):
+        assert self.handler.language == "go"
+        assert "type_declaration" in self.handler.class_types
+        assert "function_declaration" in self.handler.function_types
+        assert "import_declaration" in self.handler.import_types
+        assert "call_expression" in self.handler.call_types
+        assert "len" in self.handler.builtin_names
+
+    def test_get_name_falls_back_for_function(self):
+        """Non-type_declaration nodes should return NotImplemented."""
+        import tree_sitter_language_pack as tslp
+        parser = tslp.get_parser("go")
+        tree = parser.parse(b"package main\nfunc Foo() {}\n")
+        func_nodes = [
+            n for n in tree.root_node.children if n.type == "function_declaration"
+        ]
+        assert func_nodes
+        assert self.handler.get_name(func_nodes[0], "function") is NotImplemented
+
+    def test_get_name_type_declaration(self):
+        import tree_sitter_language_pack as tslp
+        parser = tslp.get_parser("go")
+        tree = parser.parse(b"package main\ntype Foo struct{}\n")
+        type_nodes = [
+            n for n in tree.root_node.children if n.type == "type_declaration"
+        ]
+        assert type_nodes
+        assert self.handler.get_name(type_nodes[0], "class") == "Foo"
+
+    def test_get_bases_embedded_struct(self):
+        import tree_sitter_language_pack as tslp
+        parser = tslp.get_parser("go")
+        tree = parser.parse(b"package main\ntype Child struct {\n\tParent\n}\n")
+        type_nodes = [
+            n for n in tree.root_node.children if n.type == "type_declaration"
+        ]
+        assert type_nodes
+        bases = self.handler.get_bases(type_nodes[0], b"")
+        assert "Parent" in bases
+
+    def test_extract_import_targets(self):
+        import tree_sitter_language_pack as tslp
+        parser = tslp.get_parser("go")
+        tree = parser.parse(b'package main\nimport (\n\t"fmt"\n\t"os"\n)\n')
+        import_nodes = [
+            n for n in tree.root_node.children if n.type == "import_declaration"
+        ]
+        assert import_nodes
+        targets = self.handler.extract_import_targets(import_nodes[0], b"")
+        assert "fmt" in targets
+        assert "os" in targets
+
+    def test_embedded_struct_integration(self):
+        """Full parse: embedded struct should produce INHERITS edge."""
+        parser = CodeParser()
+        source = b"""\
+package main
+
+type Base struct {
+    ID int
+}
+
+type Child struct {
+    Base
+    Name string
+}
+"""
+        nodes, edges = parser.parse_bytes(Path("/src/main.go"), source)
+        classes = {n.name for n in nodes if n.kind == "Class"}
+        assert "Base" in classes
+        assert "Child" in classes
+        inherits = [e for e in edges if e.kind == "INHERITS"]
+        assert any("Base" in e.target for e in inherits)
+
+
 class TestRustParsing:
     def setup_method(self):
         self.parser = CodeParser()
