@@ -329,26 +329,34 @@ Removed `trust_remote_code=True` and `model_kwargs={"trust_remote_code": True}` 
 
 ### HIGH: parser.py is a 3,011-line god class
 
-**Status: STILL PRESENT, WORSE (was 2,771)**
+**Status: IN PROGRESS** -- TESTED_BY duplication fixed (`d226689`), Go handler extracted (`a0850b7`), 30 `if language ==` dispatches remain
 
-55 methods, 35 `if language ==` dispatch statements. Adding language #20 requires touching 8-9 methods. TESTED_BY edge generation is logically duplicated in 3 places (lines 407-425, 521-539, 736-754).
+55 methods, 35 `if language ==` dispatch statements. Adding language #20 requires touching 8-9 methods.
 
 The module cache (`_MODULE_CACHE_MAX = 15,000`) clears ALL entries at once when full -- bounded now but still a cliff, not LRU.
 
-**Refactoring plan**: Strategy pattern. Each language gets a `LanguageHandler` with methods for:
-- `extract_functions(node) -> list[NodeInfo]`
-- `extract_calls(node) -> list[EdgeInfo]`
-- `extract_imports(node) -> list[EdgeInfo]`
-- `get_bases(node) -> list[str]`
-- `get_call_name(node) -> str | None`
+**Refactoring plan**: Strategy pattern via `BaseLanguageHandler` in `code_review_graph/lang/`. Each language gets a handler with overridable methods: `get_name`, `get_bases`, `extract_import_targets`. Default returns `NotImplemented` to fall back to `CodeParser` logic. Registry in `CodeParser.__init__` dispatches to handlers.
 
-The base `CodeParser` orchestrates AST walking and delegates to the handler. This:
-- Eliminates 35 `if language ==` dispatches
-- Makes each language's logic self-contained and testable
-- Enables the pluggable enrichment architecture (Phase 1-3)
-- Makes it possible for contributors to add a language without understanding the whole parser
+**Completed**:
+1. ~~DRY TESTED_BY generation~~ -- DONE (`d226689`)
+2. ~~LanguageHandler protocol + registry~~ -- DONE (`a0850b7`)
+3. ~~Go handler proof of concept~~ -- DONE (`a0850b7`) -- also fixed embedded struct detection bug
 
-TESTED_BY generation should be a single method called from all 3 entry points.
+**Next**:
+4. Extract Python handler (most complex, most used)
+5. Extract JS/TS handler (second most used)
+6. Extract remaining languages in batches (JVM, C-family, scripting)
+7. Remove dispatch branches from `CodeParser`, delegate to registry
+
+**Methods with the most `if language ==` dispatches** (candidates for handler methods):
+- `_get_name()` -- 7 dispatches (Dart, Solidity, Lua, Perl, C/C++, Go)
+- `_extract_imports()` -- 10 dispatches (Python, JS/TS, Go, Rust, C/C++, Java/C#, Solidity, Scala, R, Ruby, Dart)
+- `_get_call_name()` -- 4 dispatches (Solidity, Perl, Lua, Python)
+- `_collect_file_scope()` -- 2 dispatches (R, generic)
+- `_collect_import_names()` -- 2 dispatches (Python, JS/TS)
+- `_extract_functions()` -- 3 dispatches (R, Lua, generic)
+
+TESTED_BY generation was the only 3x duplication and is now fixed.
 
 ### HIGH: Connection pooling exists but tools don't use it
 
@@ -368,13 +376,14 @@ TESTED_BY generation should be a single method called from all 3 entry points.
 
 ### MEDIUM: Tests are happy-path theater
 
-81 test classes, 633 tests, but almost zero error/edge-case tests:
-- No `pytest.raises()` in most test files
-- No boundary condition testing (empty inputs, huge inputs, concurrent access)
-- No negative cases (what happens when graph.db is corrupted? when a file is deleted mid-parse?)
-- Tests verify "does it work?" but never "does it fail gracefully?"
+**Status: IMPROVING** -- TDD suite added (`1663d28`), 656 tests, 7 xfail targets
 
-This is why community detection took 4 iterations -- the first time we hit a 35k-node graph, everything fell apart in ways tests never anticipated.
+Was 633 tests with almost zero error/edge-case tests. Now 656 tests including a dedicated `test_pain_points.py` with xfail-driven development targeting known evaluation gaps. Also fixed 7 pre-existing test_tools failures caused by stale store cache.
+
+Still lacking:
+- `pytest.raises()` for error paths
+- Boundary condition testing (empty inputs, huge inputs, concurrent access)
+- Large-graph integration test (1000+ nodes, verifying community detection)
 
 ### MEDIUM: Thread safety is aspirational
 
@@ -387,13 +396,14 @@ In practice this is mostly fine because MCP tools are sequential, but the code d
 
 ### Summary: What justifies a fork
 
-| Issue | Severity | Why it needs a fork |
+| Issue | Severity | Status |
 |---|---|---|
-| Parser god class | HIGH | Can't add enrichment architecture without splitting parser first |
-| Connection pooling | HIGH | Performance fix that touches tool infrastructure |
-| VS Code extension | HIGH | Broken user-facing feature |
-| RCE in embeddings | HIGH | Security vulnerability |
-| Test quality | MEDIUM | Need to rewrite test strategy for the refactored code anyway |
+| RCE in embeddings | CRITICAL | **FIXED** (`cdf8f21`) |
+| Connection pooling | HIGH | **FIXED** (`cdf8f21`, `ec40e5b`) |
+| Parser god class | HIGH | **IN PROGRESS** -- TESTED_BY DRY done, 35 dispatches remain |
+| VS Code extension | HIGH | STILL OPEN |
+| Test quality | MEDIUM | **IMPROVING** -- TDD suite, 7 xfails as targets |
+| Thread safety | MEDIUM | STILL OPEN |
 | Thread safety | MEDIUM | Enrichment (subprocess calls) will need real concurrency |
 
 ---
@@ -433,6 +443,8 @@ No test seeds 1000+ nodes and verifies Leiden produces 10-200 communities. This 
 - **Add large-graph integration tests** to catch community/flow issues before manual eval
 - **Consider squash-merging PR branches** instead of cherry-picking (less sync overhead)
 - **Run both test projects after every change**, not just one at a time
+- **TDD for known pain points**: write xfail tests from evaluation failures FIRST, then iterate fixes until they pass -- much faster feedback loop than manual eval cycles
+- **Keep crg-future.md current**: update status after each commit, not in batches
 
 ---
 
@@ -443,9 +455,9 @@ The upstream maintainer hasn't been responsive. Our 3 draft PRs (#104, #107, #10
 ### Plan
 1. **Leave PRs open** on upstream -- they document our contributions and can be merged if the maintainer returns
 2. **Continue development in our fork** for:
-   - Parser refactoring (god class -> strategy pattern)
-   - Connection pooling in tools
-   - Security fix (trust_remote_code)
+   - ~~Security fix (trust_remote_code)~~ DONE
+   - ~~Connection pooling in tools~~ DONE
+   - Parser refactoring (god class -> strategy pattern) -- IN PROGRESS
    - VS Code extension fixes
    - Pluggable enrichment architecture
 3. **Maintain merge compatibility** with upstream where possible -- don't rename the package or change the MCP interface without reason
@@ -459,10 +471,10 @@ The upstream maintainer hasn't been responsive. Our 3 draft PRs (#104, #107, #10
 | 3 | Easy wins (risk scoring, Java imports, entry points) | **DONE** | `cdf8f21` |
 | 3b | Module-level `import X` tracking | **DONE** | `13a53f8` |
 | 3c | Weighted flow criticality | **OPEN** | |
-| 4 | Parser refactoring into LanguageHandler strategy | **OPEN** | Prerequisite for enrichment |
+| 4 | Parser refactoring into LanguageHandler strategy | **IN PROGRESS** | Go handler done (`a0850b7`); Python handler next |
 | 5 | DRY TESTED_BY generation | **DONE** | `d226689` -- extracted from 3 locations |
 | 6 | VS Code extension fixes | **OPEN** | Broken `embed` + `--full` |
-| 7 | Test quality overhaul | **STARTED** | `1663d28` -- TDD suite with 9 xfails |
+| 7 | Test quality overhaul | **STARTED** | `1663d28` -- TDD suite with 7 xfails; `a0850b7` -- 6 GoHandler unit tests |
 | 8 | Jedi enrichment for Python | **OPEN** | 1 xfail test |
 | 9 | scip-java enrichment for Java/Kotlin | **OPEN** | 3 xfail tests |
 | 10 | TS Compiler API enrichment | **OPEN** | |
@@ -504,6 +516,8 @@ Track key decisions so we don't re-litigate them.
 | 2026-04-06 | Continuous risk scoring (0.30 -> 0.05 over 5 tests) | Binary scoring clustered all risk scores at 0.50-0.70 | Verified with monotonic decrease test |
 | 2026-04-06 | JVM per-symbol imports gated on module resolution | Per-symbol edges only useful if we know which file to point to | 3 xfail tests track when scip-java makes this work |
 | 2026-04-06 | TDD-first for remaining work | 6 eval iterations taught us: write failing tests from known pain points, then iterate fixes | 9 xfails as concrete improvement targets |
+| 2026-04-06 | BaseLanguageHandler + NotImplemented sentinel | Handlers only override what they customize; returning NotImplemented falls back to CodeParser default logic | Go handler extracted cleanly; parser.py ~25 lines shorter |
+| 2026-04-06 | Go as first handler extraction | Fewest special cases (3 branches, 5 constant entries), clean AST-only logic, no shared utility access needed | Validated the pattern; also fixed pre-existing embedded struct detection bug |
 
 ---
 
