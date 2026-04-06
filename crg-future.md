@@ -1,6 +1,6 @@
 # code-review-graph: Strategic Analysis & Future Direction
 
-Last updated: 2026-04-06
+Last updated: 2026-04-06 (v8 -- all tree-sitter wins exhausted, Jedi integration next)
 
 This document captures what we've learned across 6 evaluation iterations, what's fundamentally hard, what approaches we've tried (and why some failed), and where the project should go next. It's meant to be a living reference so we don't repeat mistakes and can make informed architecture decisions.
 
@@ -25,36 +25,37 @@ This document captures what we've learned across 6 evaluation iterations, what's
 
 ## 1. Where We Are (v6 Scorecard)
 
-### HealthAgent (Python/TypeScript, 248 files)
+### HealthAgent (Python/TypeScript, 253 files)
 
-| Metric | v1 | v3 | v5 | v6 | v7 | Trend |
-|---|---|---|---|---|---|---|
-| Total edges | 22,737 | 16,594 | 16,650 | 19,362 | 19,392 | Stabilized |
-| Resolution rate | 11.7% | 22.2% | 22.2% | 28.0% | 28.1% | JVM imports pushed past plateau |
-| Resolved CALLS | 1,736 | 2,016 | 2,016 | 2,976 | 3,003 | +1,000 from v5 |
-| TESTED_BY | 3,603 | 3,387 | 3,387 | 3,420 | 3,431 | Stable |
-| Decorator nodes | present | 0 | 240 | 244 | 244 | Fixed in v4 |
-| Dead code (tool) | 577 | 648 | 237 | 191 | 191 | Stable |
-| Grep FP rate | 92% | 90% | 27% | ? | ~33% | Slight regression from codebase growth |
-| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | Ceiling reached |
+| Metric | v1 | v3 | v5 | v6 | v7 | v8 | Trend |
+|---|---|---|---|---|---|---|---|
+| Total edges | 22,737 | 16,594 | 16,650 | 19,362 | 19,392 | 21,296 | +2k from enrichments |
+| Resolution rate | 11.7% | 22.2% | 22.2% | 28.0% | 28.1% | 28.6% | Approaching tree-sitter ceiling |
+| Resolved CALLS | 1,736 | 2,016 | 2,016 | 2,976 | 3,003 | 3,525 | +500 from typed vars |
+| TESTED_BY | 3,603 | 3,387 | 3,387 | 3,420 | 3,431 | 3,482 | Stable |
+| Decorator nodes | present | 0 | 240 | 244 | 244 | 244 | Fixed in v4 |
+| Dead code (tool) | 577 | 648 | 237 | 191 | 191 | ~150 | Func-ref args helped |
+| Grep FP rate | 92% | 90% | 27% | ? | ~33% | ~53% | Remaining FPs are harder |
+| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | 10/10 | Ceiling reached |
 
 ### Gadgetbridge (Java/Kotlin, 3573 files)
 
-| Metric | Before fixes | v6 | v7 | Target |
-|---|---|---|---|---|
-| callees_of(syncDataTypeSlice) | 0 | 14 | 13 (bare `sync`) | ~13 qualified |
-| callees_of(SleepSyncer.sync) | 1 | 18 | 15 | PASS |
-| callers_of(SleepSyncer.sync) | 0 | 0 | 0 | syncDataTypeSlice |
-| callers_of(DataExporter.export) | 0 | 3 | 0 external | 1 Kotlin caller |
-| tests_for(RecordedWorkoutSyncer) | 0 | WorkoutSyncerUtilsTest | PASS | PASS |
-| Communities | 0 | 11 | 11 | 10-50 |
-| Flows | ~100 | 3,224 | 3,226 | lifecycle entries |
-| TESTED_BY edges | 0 | 6,140 | 7,384 | - |
-| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | differentiated |
+| Metric | Before fixes | v6 | v7 | v8 | Target |
+|---|---|---|---|---|---|
+| callees_of(syncDataTypeSlice) | 0 | 14 | 13 (bare `sync`) | 14 (13 qualified + mutableListOf) | PASS |
+| callees_of(SleepSyncer.sync) | 1 | 18 | 15 | PASS | PASS |
+| callers_of(SleepSyncer.sync) | 0 | 0 | 0 | PASS (via qualified name) | PASS |
+| callers_of(DataExporter.export) | 0 | 3 | 0 external | 1 Kotlin caller | PASS |
+| tests_for(RecordedWorkoutSyncer) | 0 | WorkoutSyncerUtilsTest | PASS | PASS | PASS |
+| Communities | 0 | 11 | 11 | 11 | 10-50 |
+| Flows | ~100 | 3,224 | 3,226 | 3,059 | lifecycle entries |
+| TESTED_BY edges | 0 | 6,140 | 7,384 | - | - |
+| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | differentiated |
+| Resolution rate | - | - | - | 32.6% | - |
 
-### Gadgetbridge scorecard: 6/10 PASS, 2 PARTIAL, 2 FAIL
+### Gadgetbridge scorecard: 10/10 PASS (v8, up from 6/10 in v7)
 
-**Root cause identified (2026-04-06 investigation)**: `_get_call_name()` discards the receiver for uppercase-receiver calls like `StepsSyncer.sync()` -- returns `"sync"` instead of `"StepsSyncer::sync"`. This single issue causes tests #1 (PARTIAL), #2 (FAIL), #4 (FAIL), #9 (PARTIAL). The DataExporter test expectation was wrong: only 1 Kotlin caller exists, not 2 Java callers.
+Fixed by qualifying uppercase-receiver calls (`5668532`). The DataExporter test expectation was corrected: only 1 Kotlin caller exists, not 2 Java callers.
 
 ---
 
@@ -120,9 +121,9 @@ This document captures what we've learned across 6 evaluation iterations, what's
 
 **Lesson**: There's no perfect filter without type information. The current heuristic (self/uppercase/test) is the best we can do at the AST level.
 
-### Resolution rate: plateau broken
+### Resolution rate: approaching tree-sitter ceiling
 
-Pushed from 11.7% to 28.1% (v7) through per-symbol imports, module-level import tracking, and JVM package-path fallback. Investigation on 2026-04-06 found that `_get_call_name()` drops the class name for `ClassName.method()` calls -- qualifying these would push resolution further. The tree-sitter ceiling is likely ~35%; the remaining 65% requires type information.
+Pushed from 11.7% to 28.6% (v8) through per-symbol imports, module-level import tracking, JVM package-path fallback, uppercase-receiver qualifying, constructor-based type inference, and star import scanning. The tree-sitter ceiling is ~35%; the remaining 71% requires type information. **Jedi is an installed optional dependency (`pyproject.toml` enrichment extra) but not yet integrated into the parser pipeline** -- this is the next major improvement opportunity (see Section 7, Phase 1).
 
 ### Raw SQL vs tool results divergence
 
@@ -233,7 +234,7 @@ Based on analysis of the resolution pipeline (`parser.py` lines 2082-2294):
 
 | | Resolution | Languages | Effort | New deps | Best for |
 |---|---|---|---|---|---|
-| A: Tree-sitter only | 28-35% | 19 | 4-8 wk | None | Quick wins, broad coverage |
+| A: Tree-sitter only | 28-35% | 19 | 4-8 wk | None | Quick wins, broad coverage -- **DONE, at 28.6%** |
 | B: Hybrid enrichment | 60-70% (top 5) | 19 (5 enriched) | 12-16 wk | Jedi, Node.js, Go | Accuracy-focused users |
 | C: Accept + focus | 22% (unchanged) | 19 | 4-6 wk | None | Architecture-focused users |
 | D: SCIP | 80%+ (where available) | 5-10 | 4-6 wk | protobuf | Sourcegraph users |
@@ -244,19 +245,26 @@ Based on analysis of the resolution pipeline (`parser.py` lines 2082-2294):
 
 The strategic recommendation is **Option B (Hybrid)** implemented incrementally:
 
-### Phase 0: Exhaust tree-sitter easy wins (2-4 weeks)
-- Continuous risk scoring (changes.py)
-- Java/Kotlin per-symbol imports
-- Module-level `import X` tracking for Python
-- Framework entry point patterns
-- This gets us to ~28% resolution and fixes the remaining PARTIAL scores
+### Phase 0: Exhaust tree-sitter easy wins -- DONE (2-4 weeks)
+- ~~Continuous risk scoring~~ DONE
+- ~~Java/Kotlin per-symbol imports~~ DONE
+- ~~Module-level `import X` tracking for Python~~ DONE
+- ~~Framework entry point patterns~~ DONE
+- ~~Uppercase-receiver call qualifying~~ DONE
+- ~~Constructor-based type inference~~ DONE
+- ~~Star import resolution~~ DONE
+- ~~Function-reference-as-argument tracking~~ DONE
+- ~~JS/TS typed-variable walker~~ DONE
+- Achieved 28.6% resolution (HealthAgent), 32.6% (Gadgetbridge), Gadgetbridge 10/10
 
-### Phase 1: Python enrichment via Jedi (4-6 weeks)
+### Phase 1: Python enrichment via Jedi -- NEXT
 - Jedi is pure Python, no subprocess needed
+- **Already an optional dependency** (`pyproject.toml` enrichment extra: `jedi>=0.19.2`)
+- NOT yet integrated into the parser pipeline
 - `jedi.Script(source).get_references(line, col)` resolves types
 - Architecture: after tree-sitter parse, walk CALLS edges with bare targets, use Jedi to resolve
 - Cache per-file; invalidate on change
-- Expected impact: Python resolution from ~25% to ~65%
+- Expected impact: Python resolution from ~28% to ~65%
 
 ### Phase 2: Java/Kotlin enrichment via scip-java (2-4 weeks)
 - Sourcegraph's `scip-java` is a gradle/maven plugin that emits SCIP indexes during build
@@ -350,9 +358,9 @@ Added typed variable call enrichment for Python/Kotlin/Java (post-parse tree-sit
 
 ### MEDIUM: Tests -- comprehensive TDD suite
 
-**Status: DONE** -- 680 tests, 2 xfail targets remaining
+**Status: DONE** -- 699 tests, 1 xfail remaining (bare-name reverse tracing)
 
-Added `test_pain_points.py` with 34 TDD tests targeting known evaluation gaps. 7/9 xfails flipped to passing through concrete fixes. Also fixed 7 pre-existing test_tools failures caused by stale store cache.
+Added `test_pain_points.py` with 49 TDD tests targeting known evaluation gaps. 8/9 xfails flipped to passing through concrete fixes. Also fixed 7 pre-existing test_tools failures caused by stale store cache.
 
 ### MEDIUM: Thread safety is aspirational
 
@@ -369,11 +377,10 @@ In practice this is mostly fine because MCP tools are sequential, but the code d
 |---|---|---|
 | RCE in embeddings | CRITICAL | **FIXED** (`cdf8f21`) |
 | Connection pooling | HIGH | **FIXED** (`cdf8f21`, `ec40e5b`) |
-| Parser god class | HIGH | **IN PROGRESS** -- TESTED_BY DRY done, 35 dispatches remain |
+| Parser god class | HIGH | **DONE** -- 19 langs to `lang/`, -235 lines, 16 dispatches remain |
 | VS Code extension | HIGH | STILL OPEN |
-| Test quality | MEDIUM | **IMPROVING** -- TDD suite, 7 xfails as targets |
+| Test quality | MEDIUM | **DONE** -- 699 tests, 49 TDD pain point tests, 1 xfail |
 | Thread safety | MEDIUM | STILL OPEN |
-| Thread safety | MEDIUM | Enrichment (subprocess calls) will need real concurrency |
 
 ---
 
@@ -394,20 +401,26 @@ Added in commit `cdf8f21`: Express `app.get/post/use`, Android lifecycle `@Overr
 ### Win 5: Weighted flow criticality in risk scoring -- OPEN
 `changes.py:161-163` -- currently 0.05 per flow, capped at 0.25. Weight by flow criticality (already computed) to distinguish "in 1 trivial flow" from "in 3 critical flows".
 
-### Win 6: Qualify uppercase-receiver calls -- NEXT (highest impact)
-`_get_call_name()` line ~2815 returns only the method name for `ClassName.method()`. Fix: when `is_class_call` is True, return `"ClassName.method"`. Would qualify 13 bare `sync` calls in Gadgetbridge's `syncDataTypeSlice` to `SleepSyncer::sync`, `HeartRateSyncer::sync`, etc. Generic across all languages.
+### Win 6: Qualify uppercase-receiver calls -- DONE
+Implemented in commit `5668532`. `_get_call_name()` now returns `"ClassName.method"` when receiver starts with uppercase. `_resolve_call_target()` handles the dotted format. Gadgetbridge went from 6/10 to 10/10.
 
-### Win 7: Framework decorator patterns for Click subgroups + Pydantic -- NEXT
-`_FRAMEWORK_DECORATOR_PATTERNS` doesn't match `@digest.command()` (only `@click.command()`), and Pydantic `field_serializer`/`field_validator` are absent. Just adding regex patterns.
+### Win 7: Framework decorator patterns for Click subgroups + Pydantic -- DONE
+Implemented in commit `5668532`. Added `\w+\.(command|group)\b` for Click subgroups and `(field|model)_(serializer|validator)` for Pydantic.
 
-### Win 8: Module-level call emission -- NEXT
-`_extract_calls()` at line ~2215 guards `if call_name and enclosing_func:`, silently dropping module-level calls. Fix: use file path as source when `enclosing_func` is None.
+### Win 8: Module-level call emission -- DONE
+Implemented in commit `5668532`. `_extract_calls()` now uses file path as source when `enclosing_func` is None.
 
-### Win 9: Function-reference-as-argument tracking -- OPEN
-`Thread(target=agent_thread)`, `HTTPServer(..., CallbackHandler)` -- identifiers passed as arguments are not `call` nodes and get no CALLS edges. Needs post-parse enrichment scanning call arguments for known function/class names.
+### Win 9: Function-reference-as-argument tracking -- DONE
+Implemented in commit `0c88d4b`. Post-parse enrichment `_enrich_func_ref_args()` scans call argument lists for identifiers matching `defined_names`. Handles keyword args (`target=fn`), positional args, and Kotlin callable refs (`::fn`).
 
-### Win 10: Community detection integration test -- OPEN
-No test seeds 1000+ nodes and verifies Leiden produces 10-200 communities.
+### Win 10: Constructor-based type inference -- DONE
+Implemented in commit `ef495b3`. Extends typed-var walkers to infer types from `x = SomeClass()` (Python), `val x = SomeClass()` (Kotlin), `var x = new SomeClass()` (Java). Also added new JS/TS typed-var walker for `const x = new SomeClass()` and `const x: SomeType = ...`.
+
+### Win 11: Star import resolution -- DONE
+Implemented in commit `cae05b2`. `from X import *` now resolves the target module, scans for exported names (respects `__all__`), and populates `import_map`. Includes caching and circular-import guard.
+
+### Win 12: Weighted flow criticality in risk scoring -- OPEN
+`changes.py:161-163` -- currently 0.05 per flow, capped at 0.25. Weight by flow criticality (already computed).
 
 ---
 
@@ -455,16 +468,19 @@ The upstream maintainer hasn't been responsive. Our 3 draft PRs (#104, #107, #10
 | 4 | Parser refactoring into LanguageHandler strategy | **DONE** (phase 1+2) | 19 langs extracted to `lang/`, -235 lines |
 | 5 | DRY TESTED_BY generation | **DONE** | `d226689` |
 | 6 | VS Code extension fixes | **OPEN** | Broken `embed` + `--full` |
-| 7 | TDD test suite | **DONE** | 680 passing, 2 xfail |
+| 7 | TDD test suite | **DONE** | 699 passing, 1 xfail |
 | 8 | Typed variable call enrichment (Python/Kotlin/Java) | **DONE** | `19d5e15`, `30c8c0e` |
+| 8b | Constructor-based type inference (Py/Kt/Java/TS/JS) | **DONE** | `ef495b3` |
 | 9 | JVM per-symbol imports without file resolution | **DONE** | `a0ba7d2` |
-| 10 | Qualify uppercase-receiver calls (`ClassName.method()`) | **NEXT** | Root cause of Gadgetbridge #1/#2/#4/#9 |
-| 11 | Framework decorator patterns (Click subgroups, Pydantic) | **NEXT** | 4 HealthAgent dead code FPs |
-| 12 | Module-level call emission (enclosing_func=None) | **NEXT** | Calls at file scope silently dropped |
-| 13 | Function-reference-as-argument tracking | **OPEN** | `Thread(target=fn)` pattern |
-| 14 | Jedi enrichment for Python | **OPEN** | |
-| 15 | scip-java enrichment for Java/Kotlin | **OPEN** | |
-| 16 | TS Compiler API enrichment | **OPEN** | |
+| 10 | Qualify uppercase-receiver calls (`ClassName.method()`) | **DONE** | `5668532` |
+| 11 | Framework decorator patterns (Click subgroups, Pydantic) | **DONE** | `5668532` |
+| 12 | Module-level call emission (enclosing_func=None) | **DONE** | `5668532` |
+| 13 | Function-reference-as-argument tracking | **DONE** | `0c88d4b` |
+| 14 | Star import resolution (`from X import *`) | **DONE** | `cae05b2` |
+| 15 | JS/TS typed-variable walker | **DONE** | `ef495b3` |
+| 16 | Jedi enrichment for Python | **OPEN -- NEXT** | Dependency installed, not wired |
+| 17 | scip-java enrichment for Java/Kotlin | **OPEN** | |
+| 18 | TS Compiler API enrichment | **OPEN** | |
 
 ### TDD xfail tracker (`tests/test_pain_points.py`)
 
@@ -474,15 +490,15 @@ Each xfail represents a concrete improvement target. Flip it to pass = the fix w
 |---|---|---|
 | ~~`test_module_import_attribute_call_resolved`~~ | ~~Resolution~~ | ~~DONE (`13a53f8`)~~ |
 | ~~`test_module_import_nested_attribute`~~ | ~~Resolution~~ | ~~DONE (`13a53f8`)~~ |
-| `test_star_import_call_resolved` | Resolution | Star import scanning |
+| ~~`test_star_import_call_resolved`~~ | ~~Resolution~~ | ~~DONE (`cae05b2`)~~ |
 | ~~`test_java_import_creates_per_symbol_edge`~~ | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
 | ~~`test_kotlin_import_creates_per_symbol_edge`~~ | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
 | ~~`test_method_on_typed_variable_resolves`~~ | ~~Resolution~~ | ~~DONE (typed var enrichment `19d5e15`)~~ |
-| `test_bare_name_reverse_tracing` | Dead code | Enrichment or graph heuristic |
+| `test_bare_name_reverse_tracing` | Dead code | Cross-file graph-level resolution |
 | ~~`test_java_import_per_symbol`~~ (integration) | ~~Resolution~~ | ~~DONE (package-path fallback `a0ba7d2`)~~ |
 | ~~`test_kotlin_import_per_symbol`~~ (integration) | ~~Resolution~~ | ~~DONE (package-path fallback `a0ba7d2`)~~ |
 
-**7/9 resolved. 2 remaining xfails.**
+**8/9 resolved. 1 remaining xfail.**
 
 ---
 
@@ -515,6 +531,9 @@ Track key decisions so we don't re-litigate them.
 | 2026-04-06 | Investigation: framework decorator patterns too narrow | Click `@digest.command()` doesn't match `click\.(command\|group)` regex. Pydantic validators absent. | 4 HealthAgent dead code FPs |
 | 2026-04-06 | Investigation: function-as-argument not tracked | `Thread(target=agent_thread)` -- the identifier is an argument, not a call node. No CALLS edge emitted. | 4 HealthAgent dead code FPs; needs post-parse enrichment |
 | 2026-04-06 | DataExporter.export callers: eval expectation was wrong | Grep shows only 1 Kotlin caller (HealthConnectDebugFragment), not "2 Java callers" as eval expected | Updated eval expectations |
+| 2026-04-06 | All v8 fixes implemented and validated | Uppercase-receiver, decorators, module-level calls, func-ref args, constructor inference, JS/TS walker, star imports | Gadgetbridge 10/10, HealthAgent 28.6% resolution, 699 tests |
+| 2026-04-06 | Phase 0 (tree-sitter wins) complete | All practical tree-sitter heuristics exhausted. Remaining unresolved targets are SDK/framework symbols (Column, useState, Depends) unreachable without type checkers | Next step: Jedi integration (Phase 1) |
+| 2026-04-06 | Generic over specific | User feedback: fixes must be generic across languages, not project-specific. All enrichments work for any project, not just HealthAgent/Gadgetbridge | Pattern: post-parse enrichment hooks |
 
 ---
 
