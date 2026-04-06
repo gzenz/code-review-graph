@@ -426,6 +426,53 @@ class TestResolutionMethodCallOnImportedClass:
             "setup" in e.target for e in calls
         ), f"Expected CALLS edge for module-level setup(), got: {[e.target for e in calls]}"
 
+    def test_func_passed_as_keyword_arg(self):
+        """Thread(target=agent_thread) should emit CALLS to agent_thread."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/app.py"),
+            (
+                b"import threading\n"
+                b"def agent_thread(): pass\n"
+                b"def run():\n"
+                b"    t = threading.Thread(target=agent_thread)\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "agent_thread" in e.target for e in calls
+        ), f"Expected CALLS edge for agent_thread, got: {[e.target for e in calls]}"
+
+    def test_class_passed_as_positional_arg(self):
+        """HTTPServer(addr, Handler) should emit CALLS to Handler."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/app.py"),
+            (
+                b"class Handler: pass\n"
+                b"def run():\n"
+                b"    server = make_server(('localhost', 8080), Handler)\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "Handler" in e.target for e in calls
+        ), f"Expected CALLS edge for Handler, got: {[e.target for e in calls]}"
+
+    def test_func_ref_in_executor(self):
+        """run_in_executor(None, _build_prompt) should emit CALLS to _build_prompt."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/app.py"),
+            (
+                b"def _build_prompt(): pass\n"
+                b"async def main():\n"
+                b"    loop = asyncio.get_event_loop()\n"
+                b"    result = await loop.run_in_executor(None, _build_prompt)\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "_build_prompt" in e.target for e in calls
+        ), f"Expected CALLS edge for _build_prompt, got: {[e.target for e in calls]}"
+
 
 # ===================================================================
 # 2. DEAD CODE FALSE POSITIVES

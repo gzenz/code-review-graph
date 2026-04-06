@@ -302,6 +302,11 @@ class CodeParser:
             tree.root_node, language, file_path_str, edges, import_map,
         )
 
+        # Enrich: detect function/class references passed as call arguments
+        self._enrich_func_ref_args(
+            tree.root_node, language, file_path_str, edges, defined_names,
+        )
+
         # Resolve bare call targets to qualified names using same-file definitions
         edges = self._resolve_call_targets(nodes, edges, file_path_str)
 
@@ -780,6 +785,119 @@ class CodeParser:
                     )
             resolved.append(edge)
         return resolved
+
+    # ------------------------------------------------------------------
+    # Function-reference-as-argument enrichment
+    # ------------------------------------------------------------------
+
+    def _enrich_func_ref_args(
+        self,
+        root,
+        language: str,
+        file_path: str,
+        edges: list[EdgeInfo],
+        defined_names: set[str],
+    ) -> None:
+        """Detect function/class names passed as arguments to calls.
+
+        Patterns like ``Thread(target=agent_thread)`` or
+        ``HTTPServer(addr, CallbackHandler)`` pass a function/class by
+        reference without calling it.  The normal call extraction misses
+        these because the identifier is an argument, not a callee.
+
+        This enrichment walks call argument lists and emits CALLS edges
+        for identifiers that match a locally-defined name.
+        """
+        if not defined_names:
+            return
+        # Argument-list node types vary by language
+        arg_list_types = {
+            "argument_list", "arguments", "value_arguments",
+            "actual_parameters", "template_argument_list",
+        }
+        # Identifier types
+        ident_types = {"identifier", "simple_identifier"}
+        # Keyword-argument types (the value is what we want)
+        kw_types = {"keyword_argument", "value_argument", "named_argument"}
+
+        self._walk_func_ref_args(
+            root, language, file_path, edges, defined_names,
+            arg_list_types, ident_types, kw_types,
+            enclosing_func=None, enclosing_class=None,
+        )
+
+    def _walk_func_ref_args(
+        self,
+        node,
+        language: str,
+        file_path: str,
+        edges: list[EdgeInfo],
+        defined_names: set[str],
+        arg_list_types: set[str],
+        ident_types: set[str],
+        kw_types: set[str],
+        enclosing_func: Optional[str],
+        enclosing_class: Optional[str],
+        _depth: int = 0,
+    ) -> None:
+        if _depth > 50:
+            return
+        _, func_types, _, _ = self._type_sets(language)
+
+        for child in node.children:
+            # Track enclosing function scope
+            if child.type in func_types:
+                fname = self._get_name(child, language, "function")
+                if fname:
+                    self._walk_func_ref_args(
+                        child, language, file_path, edges, defined_names,
+                        arg_list_types, ident_types, kw_types,
+                        enclosing_func=fname, enclosing_class=enclosing_class,
+                        _depth=_depth + 1,
+                    )
+                    continue
+
+            # Scan argument lists for function/class references
+            if child.type in arg_list_types:
+                for arg in child.children:
+                    ref_name = None
+                    line = arg.start_point[0] + 1
+                    # Direct identifier: HTTPServer(addr, CallbackHandler)
+                    if arg.type in ident_types:
+                        ref_name = arg.text.decode("utf-8", errors="replace")
+                    # Keyword argument: Thread(target=agent_thread)
+                    elif arg.type in kw_types:
+                        for sub in arg.children:
+                            if sub.type in ident_types:
+                                ref_name = sub.text.decode("utf-8", errors="replace")
+                    # Kotlin callable_reference: Thread(::agentThread)
+                    elif arg.type == "callable_reference":
+                        for sub in arg.children:
+                            if sub.type in ident_types:
+                                ref_name = sub.text.decode("utf-8", errors="replace")
+
+                    if ref_name and ref_name in defined_names:
+                        source = (
+                            self._qualify(enclosing_func, file_path, enclosing_class)
+                            if enclosing_func else file_path
+                        )
+                        edges.append(EdgeInfo(
+                            kind="CALLS",
+                            source=source,
+                            target=ref_name,
+                            file_path=file_path,
+                            line=line,
+                        ))
+                continue  # argument list fully scanned, skip recursion
+
+            # Recurse into other children
+            self._walk_func_ref_args(
+                child, language, file_path, edges, defined_names,
+                arg_list_types, ident_types, kw_types,
+                enclosing_func=enclosing_func,
+                enclosing_class=enclosing_class,
+                _depth=_depth + 1,
+            )
 
     # ------------------------------------------------------------------
     # Typed-variable call enrichment
