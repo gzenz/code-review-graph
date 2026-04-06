@@ -279,6 +279,84 @@ class TestResolutionMethodCallOnImportedClass:
             "authenticate" in e.target and "::" in e.target for e in calls
         ), f"Expected resolved authenticate call, got: {[e.target for e in calls]}"
 
+    def test_kotlin_typed_variable_resolves(self):
+        """val syncer: SleepSyncer = ... ; syncer.sync() -> SleepSyncer::sync."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/Main.kt"),
+            (
+                b"package com.example\n"
+                b"import com.example.syncers.SleepSyncer\n"
+                b"fun main() {\n"
+                b"    val syncer: SleepSyncer = SleepSyncer()\n"
+                b"    syncer.sync()\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "sync" in e.target and "SleepSyncer" in e.target and "::" in e.target
+            for e in calls
+        ), f"Expected SleepSyncer::sync, got: {[e.target for e in calls]}"
+
+    def test_kotlin_constructor_param_typed_call(self):
+        """class Foo(val repo: UserRepository) ; repo.save() -> UserRepository::save."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/Service.kt"),
+            (
+                b"package com.example\n"
+                b"class UserService(val repo: UserRepository) {\n"
+                b"    fun persist(user: User) {\n"
+                b"        repo.save(user)\n"
+                b"    }\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "save" in e.target and "UserRepository" in e.target and "::" in e.target
+            for e in calls
+        ), f"Expected UserRepository::save, got: {[e.target for e in calls]}"
+
+    def test_java_typed_variable_resolves(self):
+        """AuthService service = new AuthService(); service.auth() -> AuthService::auth."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/App.java"),
+            (
+                b"package com.example;\n"
+                b"public class App {\n"
+                b"    public void main() {\n"
+                b"        AuthService service = new AuthService();\n"
+                b"        service.authenticate();\n"
+                b"    }\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "authenticate" in e.target and "AuthService" in e.target and "::" in e.target
+            for e in calls
+        ), f"Expected AuthService::authenticate, got: {[e.target for e in calls]}"
+
+    def test_java_field_typed_call(self):
+        """private UserRepository repo; ... repo.findById() -> UserRepository::findById."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/Service.java"),
+            (
+                b"package com.example;\n"
+                b"public class UserService {\n"
+                b"    private UserRepository repo;\n"
+                b"    public User get(int id) {\n"
+                b"        return repo.findById(id);\n"
+                b"    }\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "findById" in e.target and "UserRepository" in e.target and "::" in e.target
+            for e in calls
+        ), f"Expected UserRepository::findById, got: {[e.target for e in calls]}"
+
 
 # ===================================================================
 # 2. DEAD CODE FALSE POSITIVES

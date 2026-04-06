@@ -773,7 +773,7 @@ class CodeParser:
         return resolved
 
     # ------------------------------------------------------------------
-    # Typed-variable call enrichment (Python)
+    # Typed-variable call enrichment
     # ------------------------------------------------------------------
 
     def _enrich_typed_var_calls(
@@ -791,11 +791,18 @@ class CodeParser:
             service: AuthService = AuthService('x', 'y')
             service.authenticate('token')  # -> AuthService::authenticate
         """
-        if language != "python":
-            return
-        self._walk_py_typed_calls(
-            root, file_path, edges, import_map, None, None, {},
-        )
+        if language == "python":
+            self._walk_py_typed_calls(
+                root, file_path, edges, import_map, None, None, {},
+            )
+        elif language == "kotlin":
+            self._walk_kt_typed_calls(
+                root, file_path, edges, import_map, None, None, {},
+            )
+        elif language == "java":
+            self._walk_java_typed_calls(
+                root, file_path, edges, import_map, None, None, {},
+            )
 
     def _walk_py_typed_calls(
         self,
@@ -875,35 +882,256 @@ class CodeParser:
                                     )
                                     break
                             if method:
-                                type_name = typed_vars[recv_text]
-                                caller = self._qualify(
+                                self._emit_typed_call_edge(
+                                    typed_vars[recv_text], method,
                                     enclosing_func, file_path,
-                                    enclosing_class,
+                                    enclosing_class, import_map,
+                                    "python", edges,
+                                    child.start_point[0] + 1,
                                 )
-                                # Try to resolve the type through imports
-                                resolved = None
-                                if type_name in import_map:
-                                    resolved = self._resolve_module_to_file(
-                                        import_map[type_name],
-                                        file_path, "python",
-                                    )
-                                if resolved:
-                                    target = f"{resolved}::{type_name}.{method}"
-                                else:
-                                    target = f"{type_name}::{method}"
-                                edges.append(EdgeInfo(
-                                    kind="CALLS",
-                                    source=caller,
-                                    target=target,
-                                    file_path=file_path,
-                                    line=child.start_point[0] + 1,
-                                ))
 
             # Recurse into other constructs (if/for/with/etc.)
             self._walk_py_typed_calls(
                 child, file_path, edges, import_map,
                 enclosing_class, enclosing_func, typed_vars,
             )
+
+    def _emit_typed_call_edge(
+        self,
+        type_name: str,
+        method: str,
+        enclosing_func: str,
+        file_path: str,
+        enclosing_class: Optional[str],
+        import_map: dict[str, str],
+        language: str,
+        edges: list[EdgeInfo],
+        line: int,
+    ) -> None:
+        caller = self._qualify(enclosing_func, file_path, enclosing_class)
+        resolved = None
+        if type_name in import_map:
+            resolved = self._resolve_module_to_file(
+                import_map[type_name], file_path, language,
+            )
+        if resolved:
+            target = f"{resolved}::{type_name}.{method}"
+        else:
+            target = f"{type_name}::{method}"
+        edges.append(EdgeInfo(
+            kind="CALLS", source=caller, target=target,
+            file_path=file_path, line=line,
+        ))
+
+    # -- Kotlin typed-variable walker --
+
+    def _walk_kt_typed_calls(
+        self,
+        node,
+        file_path: str,
+        edges: list[EdgeInfo],
+        import_map: dict[str, str],
+        enclosing_class: Optional[str],
+        enclosing_func: Optional[str],
+        typed_vars: dict[str, str],
+    ) -> None:
+        for child in node.children:
+            # Enter class scope
+            if child.type == "class_declaration":
+                name = None
+                for sub in child.children:
+                    if sub.type == "type_identifier":
+                        name = sub.text.decode("utf-8", errors="replace")
+                        break
+                # Collect constructor parameter types
+                ctor_vars: dict[str, str] = {}
+                for sub in child.children:
+                    if sub.type == "primary_constructor":
+                        for param in sub.children:
+                            if param.type == "class_parameter":
+                                self._kt_collect_param_type(param, ctor_vars)
+                self._walk_kt_typed_calls(
+                    child, file_path, edges, import_map,
+                    name, enclosing_func, ctor_vars,
+                )
+                continue
+
+            # Enter function scope
+            if child.type == "function_declaration":
+                name = None
+                for sub in child.children:
+                    if sub.type == "simple_identifier":
+                        name = sub.text.decode("utf-8", errors="replace")
+                        break
+                self._walk_kt_typed_calls(
+                    child, file_path, edges, import_map,
+                    enclosing_class, name, dict(typed_vars),
+                )
+                continue
+
+            # Collect typed locals: val/var x: Type = ...
+            if child.type == "property_declaration":
+                for sub in child.children:
+                    if sub.type == "variable_declaration":
+                        self._kt_collect_var_type(sub, typed_vars)
+
+            # Resolve receiver.method() calls
+            if (
+                child.type == "call_expression"
+                and enclosing_func
+                and child.children
+            ):
+                first = child.children[0]
+                if first.type == "navigation_expression" and first.children:
+                    recv = method = None
+                    for sub in first.children:
+                        if sub.type == "simple_identifier" and recv is None:
+                            recv = sub.text.decode("utf-8", errors="replace")
+                        elif sub.type == "navigation_suffix":
+                            for ns in sub.children:
+                                if ns.type == "simple_identifier":
+                                    method = ns.text.decode(
+                                        "utf-8", errors="replace",
+                                    )
+                    if recv and recv in typed_vars and method:
+                        self._emit_typed_call_edge(
+                            typed_vars[recv], method, enclosing_func,
+                            file_path, enclosing_class, import_map,
+                            "kotlin", edges, child.start_point[0] + 1,
+                        )
+
+            self._walk_kt_typed_calls(
+                child, file_path, edges, import_map,
+                enclosing_class, enclosing_func, typed_vars,
+            )
+
+    @staticmethod
+    def _kt_collect_param_type(
+        param_node, typed_vars: dict[str, str],
+    ) -> None:
+        name = type_name = None
+        for sub in param_node.children:
+            if sub.type == "simple_identifier" and name is None:
+                name = sub.text.decode("utf-8", errors="replace")
+            elif sub.type == "user_type":
+                for tsub in sub.children:
+                    if tsub.type == "type_identifier":
+                        type_name = tsub.text.decode(
+                            "utf-8", errors="replace",
+                        )
+                        break
+        if name and type_name:
+            typed_vars[name] = type_name
+
+    @staticmethod
+    def _kt_collect_var_type(
+        var_node, typed_vars: dict[str, str],
+    ) -> None:
+        name = type_name = None
+        for sub in var_node.children:
+            if sub.type == "simple_identifier" and name is None:
+                name = sub.text.decode("utf-8", errors="replace")
+            elif sub.type == "user_type":
+                for tsub in sub.children:
+                    if tsub.type == "type_identifier":
+                        type_name = tsub.text.decode(
+                            "utf-8", errors="replace",
+                        )
+                        break
+        if name and type_name:
+            typed_vars[name] = type_name
+
+    # -- Java typed-variable walker --
+
+    def _walk_java_typed_calls(
+        self,
+        node,
+        file_path: str,
+        edges: list[EdgeInfo],
+        import_map: dict[str, str],
+        enclosing_class: Optional[str],
+        enclosing_func: Optional[str],
+        typed_vars: dict[str, str],
+    ) -> None:
+        for child in node.children:
+            # Enter class scope
+            if child.type == "class_declaration":
+                name = None
+                for sub in child.children:
+                    if sub.type == "identifier":
+                        name = sub.text.decode("utf-8", errors="replace")
+                        break
+                self._walk_java_typed_calls(
+                    child, file_path, edges, import_map,
+                    name, enclosing_func, {},
+                )
+                continue
+
+            # Enter method scope
+            if child.type in ("method_declaration", "constructor_declaration"):
+                name = None
+                for sub in child.children:
+                    if sub.type == "identifier":
+                        name = sub.text.decode("utf-8", errors="replace")
+                        break
+                self._walk_java_typed_calls(
+                    child, file_path, edges, import_map,
+                    enclosing_class, name, dict(typed_vars),
+                )
+                continue
+
+            # Collect typed fields/locals: Type name = ...;
+            if child.type in ("field_declaration", "local_variable_declaration"):
+                self._java_collect_typed_var(child, typed_vars)
+
+            # Resolve receiver.method() calls
+            if (
+                child.type == "method_invocation"
+                and enclosing_func
+                and child.children
+            ):
+                recv = method = None
+                for i, sub in enumerate(child.children):
+                    if sub.type == "identifier" and recv is None:
+                        recv = sub.text.decode("utf-8", errors="replace")
+                    elif sub.type == "." and recv is not None:
+                        # Next identifier is the method name
+                        pass
+                    elif (
+                        sub.type == "identifier"
+                        and recv is not None
+                        and method is None
+                        and i > 0
+                    ):
+                        method = sub.text.decode("utf-8", errors="replace")
+                if recv and recv in typed_vars and method:
+                    self._emit_typed_call_edge(
+                        typed_vars[recv], method, enclosing_func,
+                        file_path, enclosing_class, import_map,
+                        "java", edges, child.start_point[0] + 1,
+                    )
+
+            self._walk_java_typed_calls(
+                child, file_path, edges, import_map,
+                enclosing_class, enclosing_func, typed_vars,
+            )
+
+    @staticmethod
+    def _java_collect_typed_var(
+        decl_node, typed_vars: dict[str, str],
+    ) -> None:
+        type_name = var_name = None
+        for sub in decl_node.children:
+            if sub.type == "type_identifier" and type_name is None:
+                type_name = sub.text.decode("utf-8", errors="replace")
+            elif sub.type == "variable_declarator":
+                for inner in sub.children:
+                    if inner.type == "identifier" and var_name is None:
+                        var_name = inner.text.decode(
+                            "utf-8", errors="replace",
+                        )
+        if type_name and var_name:
+            typed_vars[var_name] = type_name
 
     _MAX_AST_DEPTH = 180  # Guard against pathologically nested source files
     _MAX_TEST_DESCRIPTION_LEN = 200  # Cap test description length in node names
