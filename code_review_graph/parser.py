@@ -110,99 +110,15 @@ EXTENSION_TO_LANGUAGE: dict[str, str] = {
 # Tree-sitter node type mappings per language
 # Maps (language) -> dict of semantic role -> list of TS node types
 _CLASS_TYPES: dict[str, list[str]] = {
-    "rust": ["struct_item", "enum_item", "impl_item"],
-    "java": ["class_declaration", "interface_declaration", "enum_declaration"],
-    "c": ["struct_specifier", "type_definition"],
-    "cpp": ["class_specifier", "struct_specifier"],
-    "csharp": [
-        "class_declaration", "interface_declaration",
-        "enum_declaration", "struct_declaration",
-    ],
-    "ruby": ["class", "module"],
-    "r": [],  # Classes detected via call pattern-matching, not AST node types
-    "perl": ["package_statement", "class_statement", "role_statement"],
-    "kotlin": ["class_declaration", "object_declaration"],
-    "swift": ["class_declaration", "struct_declaration", "protocol_declaration"],
-    "php": ["class_declaration", "interface_declaration"],
-    "scala": [
-        "class_definition", "trait_definition", "object_definition", "enum_definition",
-    ],
-    "solidity": [
-        "contract_declaration", "interface_declaration", "library_declaration",
-        "struct_declaration", "enum_declaration", "error_declaration",
-        "user_defined_type_definition",
-    ],
-    "dart": ["class_definition", "mixin_declaration", "enum_declaration"],
-    "lua": [],  # Lua has no class keyword; table-based OOP handled via constructs handler
 }
 
 _FUNCTION_TYPES: dict[str, list[str]] = {
-    "rust": ["function_item"],
-    "java": ["method_declaration", "constructor_declaration"],
-    "c": ["function_definition"],
-    "cpp": ["function_definition"],
-    "csharp": ["method_declaration", "constructor_declaration"],
-    "ruby": ["method", "singleton_method"],
-    "r": ["function_definition"],
-    "perl": ["subroutine_declaration_statement", "method_declaration_statement"],
-    "kotlin": ["function_declaration"],
-    "swift": ["function_declaration"],
-    "php": ["function_definition", "method_declaration"],
-    "scala": ["function_definition", "function_declaration"],
-    # Solidity: events and modifiers use kind="Function" because the graph
-    # schema has no dedicated kind for them.  State variables are also modeled
-    # as Function nodes (public ones auto-generate getters) and distinguished
-    # via extra["solidity_kind"].
-    "solidity": [
-        "function_definition", "constructor_definition", "modifier_definition",
-        "event_definition", "fallback_receive_definition",
-    ],
-    # Dart: function_signature covers both top-level functions and class methods
-    # (class methods appear as method_signature > function_signature pairs;
-    # the parser recurses into method_signature generically and then matches
-    # function_signature inside it).
-    "dart": ["function_signature"],
-    "lua": ["function_declaration"],
 }
 
 _IMPORT_TYPES: dict[str, list[str]] = {
-    "rust": ["use_declaration"],
-    "java": ["import_declaration"],
-    "c": ["preproc_include"],
-    "cpp": ["preproc_include"],
-    "csharp": ["using_directive"],
-    "ruby": ["call"],  # require/require_relative
-    "r": ["call"],  # library(), require(), source() — filtered downstream
-    "perl": ["use_statement", "require_expression"],
-    "kotlin": ["import_header"],
-    "swift": ["import_declaration"],
-    "php": ["namespace_use_declaration"],
-    "scala": ["import_declaration"],
-    "solidity": ["import_directive"],
-    # Dart: import_or_export wraps library_import > import_specification > configurable_uri
-    "dart": ["import_or_export"],
-    # Lua: require() is a function_call, handled via _extract_lua_constructs
-    "lua": [],
 }
 
 _CALL_TYPES: dict[str, list[str]] = {
-    "rust": ["call_expression", "macro_invocation"],
-    "java": ["method_invocation", "object_creation_expression"],
-    "c": ["call_expression"],
-    "cpp": ["call_expression"],
-    "csharp": ["invocation_expression", "object_creation_expression"],
-    "ruby": ["call", "method_call"],
-    "r": ["call"],
-    "perl": [
-        "function_call_expression", "method_call_expression",
-        "ambiguous_function_call_expression",
-    ],
-    "kotlin": ["call_expression"],
-    "swift": ["call_expression"],
-    "php": ["function_call_expression", "member_call_expression"],
-    "scala": ["call_expression", "instance_expression", "generic_function"],
-    "solidity": ["call_expression"],
-    "lua": ["function_call"],
 }
 
 # Patterns that indicate a test function
@@ -241,11 +157,6 @@ _TEST_ANNOTATIONS = frozenset({
 })
 
 _BUILTIN_NAMES: dict[str, frozenset[str]] = {
-    "rust": frozenset({
-        "println", "eprintln", "format", "vec", "panic", "todo",
-        "unimplemented", "unreachable", "assert", "assert_eq", "assert_ne",
-        "dbg", "cfg",
-    }),
 }
 
 
@@ -2637,49 +2548,7 @@ class CodeParser:
         imports = []
         text = node.text.decode("utf-8", errors="replace").strip()
 
-        if language == "rust":
-            # use crate::module::item
-            imports.append(text.replace("use ", "").rstrip(";").strip())
-        elif language in ("c", "cpp"):
-            # #include <header> or #include "header"
-            for child in node.children:
-                if child.type in ("system_lib_string", "string_literal"):
-                    val = child.text.decode("utf-8", errors="replace").strip("<>\"")
-                    imports.append(val)
-        elif language in ("java", "csharp"):
-            # import/using package.Class
-            parts = text.split()
-            if len(parts) >= 2:
-                imports.append(parts[-1].rstrip(";"))
-        elif language == "solidity":
-            # import "path/to/file.sol" or import {Symbol} from "path"
-            for child in node.children:
-                if child.type == "string":
-                    val = child.text.decode("utf-8", errors="replace").strip('"')
-                    if val:
-                        imports.append(val)
-        elif language == "scala":
-            parts = []
-            selectors = []
-            is_wildcard = False
-            for child in node.children:
-                if child.type == "identifier":
-                    parts.append(child.text.decode("utf-8", errors="replace"))
-                elif child.type == "namespace_selectors":
-                    for sub in child.children:
-                        if sub.type == "identifier":
-                            selectors.append(sub.text.decode("utf-8", errors="replace"))
-                elif child.type == "namespace_wildcard":
-                    is_wildcard = True
-            base = ".".join(parts)
-            if selectors:
-                for name in selectors:
-                    imports.append(f"{base}.{name}")
-            elif is_wildcard:
-                imports.append(f"{base}.*")
-            elif base:
-                imports.append(base)
-        elif language == "r":
+        if language == "r":
             # library(pkg), require(pkg), source("file.R")
             func_name = self._r_call_func_name(node)
             if func_name in ("library", "require", "source"):
@@ -2691,27 +2560,6 @@ class CodeParser:
                         if val:
                             imports.append(val)
                     break  # Only first argument matters
-        elif language == "ruby":
-            # require 'module' or require_relative 'path'
-            if "require" in text:
-                match = re.search(r"""['"](.*?)['"]""", text)
-                if match:
-                    imports.append(match.group(1))
-        elif language == "dart":
-            # import 'dart:async' or import 'package:flutter/material.dart'
-            # Node structure: import_or_export > library_import > import_specification
-            #                 > configurable_uri > uri > string_literal
-            def _find_string_literal(n) -> Optional[str]:
-                if n.type == "string_literal":
-                    return n.text.decode("utf-8", errors="replace").strip("'\"")
-                for c in n.children:
-                    result = _find_string_literal(c)
-                    if result is not None:
-                        return result
-                return None
-            val = _find_string_literal(node)
-            if val:
-                imports.append(val)
         else:
             # Fallback: just record the text
             imports.append(text)
