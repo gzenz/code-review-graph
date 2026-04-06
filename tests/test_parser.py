@@ -195,15 +195,15 @@ class TestCodeParser:
         assert "get" not in targets
 
     def test_class_receiver_call_emits_edge(self):
-        """ClassName.method() should emit a CALLS edge (static/companion call)."""
+        """ClassName.method() should emit a CALLS edge with qualified target."""
         _, edges = self.parser.parse_bytes(
             Path("/src/app.py"),
             b"def main():\n    MyClass.create()\n    Factory.build()\n",
         )
         calls = [e for e in edges if e.kind == "CALLS"]
         targets = {c.target for c in calls}
-        assert "create" in targets
-        assert "build" in targets
+        assert any("MyClass" in t and "create" in t for t in targets)
+        assert any("Factory" in t and "build" in t for t in targets)
 
     def test_lowercase_receiver_call_blocked(self):
         """obj.method() should still be blocked for lowercase receivers."""

@@ -760,11 +760,20 @@ class CodeParser:
         resolved: list[EdgeInfo] = []
         for edge in edges:
             if edge.kind == "CALLS" and "::" not in edge.target:
-                if edge.target in symbols:
+                target = edge.target
+                if target in symbols:
+                    target = symbols[target]
+                elif "." in target:
+                    # ClassName.method -- qualify via the class name
+                    cls_name = target.split(".", 1)[0]
+                    if cls_name in symbols:
+                        # symbols[cls_name] is file::ClassName; append .method
+                        target = f"{symbols[cls_name].rsplit('::', 1)[0]}::{target}"
+                if target != edge.target:
                     edge = EdgeInfo(
                         kind=edge.kind,
                         source=edge.source,
-                        target=symbols[edge.target],
+                        target=target,
                         file_path=edge.file_path,
                         line=edge.line,
                         extra=edge.extra,
@@ -2227,6 +2236,19 @@ class CodeParser:
                 file_path=file_path,
                 line=child.start_point[0] + 1,
             ))
+        elif call_name and not enclosing_func:
+            # Module-level call (not inside any function): use file as source
+            target = self._resolve_call_target(
+                call_name, file_path, language,
+                import_map or {}, defined_names or set(),
+            )
+            edges.append(EdgeInfo(
+                kind="CALLS",
+                source=file_path,
+                target=target,
+                file_path=file_path,
+                line=child.start_point[0] + 1,
+            ))
 
         # Module-qualified calls: json.dumps(), os.path.getsize(), etc.
         # _get_call_name returns None for lowercase receivers in prod files,
@@ -2610,6 +2632,18 @@ class CodeParser:
             )
             if resolved:
                 return self._qualify(call_name, resolved, None)
+        # ClassName.method -- resolve the class part via defined_names or import_map
+        if "." in call_name:
+            cls_name, method = call_name.split(".", 1)
+            if cls_name in defined_names:
+                return f"{file_path}::{call_name}"
+            if cls_name in import_map:
+                resolved = self._resolve_module_to_file(
+                    import_map[cls_name], file_path, language,
+                )
+                if resolved:
+                    return f"{resolved}::{call_name}"
+                return f"{import_map[cls_name]}::{method}"
         return call_name
 
     def _qualify(self, name: str, file_path: str, enclosing_class: Optional[str]) -> str:
@@ -2751,6 +2785,19 @@ class CodeParser:
         # Simple call: func_name(args)
         # Kotlin uses "simple_identifier" instead of "identifier".
         if first.type in ("identifier", "simple_identifier"):
+            # Java method_invocation has flat structure: identifier . identifier (args)
+            # Check if this is actually ClassName.method() by looking for a dot
+            # followed by another identifier.
+            children = node.children
+            if (
+                len(children) >= 3
+                and children[1].type == "."
+                and children[2].type == "identifier"
+            ):
+                receiver_text = first.text.decode("utf-8", errors="replace")
+                method_text = children[2].text.decode("utf-8", errors="replace")
+                if receiver_text[:1].isupper() or is_test_file:
+                    return f"{receiver_text}.{method_text}"
             return first.text.decode("utf-8", errors="replace")
 
         # Perl: function_call_expression / ambiguous_function_call_expression
@@ -2812,16 +2859,26 @@ class CodeParser:
 
             # Get the rightmost identifier (the method name)
             # Kotlin navigation_expression uses navigation_suffix > simple_identifier.
+            # For uppercase receivers (ClassName.method), prefix with receiver name
+            # to produce "ClassName.method" -- enables reverse lookup.
+            receiver = first.children[0] if first.children else None
+            receiver_prefix = ""
+            if receiver and receiver.type in ("identifier", "simple_identifier"):
+                rtxt = receiver.text.decode("utf-8", errors="replace")
+                if rtxt[:1].isupper():
+                    receiver_prefix = rtxt + "."
             for child in reversed(first.children):
                 if child.type in (
                     "identifier", "property_identifier", "field_identifier",
                     "field_name", "simple_identifier",
                 ):
-                    return child.text.decode("utf-8", errors="replace")
+                    method = child.text.decode("utf-8", errors="replace")
+                    return receiver_prefix + method if receiver_prefix else method
                 if child.type == "navigation_suffix":
                     for sub in child.children:
                         if sub.type == "simple_identifier":
-                            return sub.text.decode("utf-8", errors="replace")
+                            method = sub.text.decode("utf-8", errors="replace")
+                            return receiver_prefix + method if receiver_prefix else method
             return first.text.decode("utf-8", errors="replace")
 
         # Scoped call (e.g., Rust path::func())

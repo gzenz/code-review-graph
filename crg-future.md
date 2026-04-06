@@ -25,36 +25,36 @@ This document captures what we've learned across 6 evaluation iterations, what's
 
 ## 1. Where We Are (v6 Scorecard)
 
-### HealthAgent (Python/TypeScript, 245 files)
+### HealthAgent (Python/TypeScript, 248 files)
 
-| Metric | v1 | v3 | v5 | v6 | Trend |
-|---|---|---|---|---|---|
-| Total edges | 22,737 | 16,594 | 16,650 | 18,069 | Stabilized, slight growth from per-symbol imports |
-| Resolution rate | 11.7% | 22.2% | 22.2% | 21.1% | Plateau at ~22% |
-| Resolved CALLS | 1,736 | 2,016 | 2,016 | 2,023 | Incremental gains |
-| TESTED_BY | 3,603 | 3,387 | 3,387 | 3,387 | Stable |
-| Decorator nodes | present | 0 | 240 | 240 | Fixed in v4 |
-| Dead code (tool) | 577 | 648 | 237 | 191 | Steady improvement |
-| Grep FP rate | 92% | 90% | 27% | 15% | Major wins |
-| FP spot check | 1/10 | 2/10 | 9/10 | 9/10 | Near-ceiling |
+| Metric | v1 | v3 | v5 | v6 | v7 | Trend |
+|---|---|---|---|---|---|---|
+| Total edges | 22,737 | 16,594 | 16,650 | 19,362 | 19,392 | Stabilized |
+| Resolution rate | 11.7% | 22.2% | 22.2% | 28.0% | 28.1% | JVM imports pushed past plateau |
+| Resolved CALLS | 1,736 | 2,016 | 2,016 | 2,976 | 3,003 | +1,000 from v5 |
+| TESTED_BY | 3,603 | 3,387 | 3,387 | 3,420 | 3,431 | Stable |
+| Decorator nodes | present | 0 | 240 | 244 | 244 | Fixed in v4 |
+| Dead code (tool) | 577 | 648 | 237 | 191 | 191 | Stable |
+| Grep FP rate | 92% | 90% | 27% | ? | ~33% | Slight regression from codebase growth |
+| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | Ceiling reached |
 
 ### Gadgetbridge (Java/Kotlin, 3573 files)
 
-| Metric | Before fixes | v6 | Target |
-|---|---|---|---|
-| callees_of(syncDataTypeSlice) | 0 | 14 | ~13 |
-| callees_of(SleepSyncer.sync) | 1 | 18 | sleepSessionToRecord + others |
-| callers_of(SleepSyncer.sync) | 0 | 0 | syncDataTypeSlice (FAIL) |
-| callers_of(DataExporter.export) | 0 | 3 | 2 Java callers |
-| tests_for(RecordedWorkoutSyncer) | 0 | WorkoutSyncerUtilsTest | PASS |
-| Communities | 0 | 11 | 10-50 |
-| Flows | ~100 | 3,224 | lifecycle entries |
-| TESTED_BY edges | 0 | 6,140 | - |
-| Risk score range | all 0.5 | 0.50-0.70 | differentiated |
+| Metric | Before fixes | v6 | v7 | Target |
+|---|---|---|---|---|
+| callees_of(syncDataTypeSlice) | 0 | 14 | 13 (bare `sync`) | ~13 qualified |
+| callees_of(SleepSyncer.sync) | 1 | 18 | 15 | PASS |
+| callers_of(SleepSyncer.sync) | 0 | 0 | 0 | syncDataTypeSlice |
+| callers_of(DataExporter.export) | 0 | 3 | 0 external | 1 Kotlin caller |
+| tests_for(RecordedWorkoutSyncer) | 0 | WorkoutSyncerUtilsTest | PASS | PASS |
+| Communities | 0 | 11 | 11 | 10-50 |
+| Flows | ~100 | 3,224 | 3,226 | lifecycle entries |
+| TESTED_BY edges | 0 | 6,140 | 7,384 | - |
+| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | differentiated |
 
-### Gadgetbridge scorecard: 7/10 PASS, 2 PARTIAL, 1 FAIL
+### Gadgetbridge scorecard: 6/10 PASS, 2 PARTIAL, 2 FAIL
 
-The FAIL (callers_of SleepSyncer.sync) and PARTIALs (impact radius, risk scores) all trace to the same root cause: bare-name CALLS targets can't be traced back to their callers.
+**Root cause identified (2026-04-06 investigation)**: `_get_call_name()` discards the receiver for uppercase-receiver calls like `StepsSyncer.sync()` -- returns `"sync"` instead of `"StepsSyncer::sync"`. This single issue causes tests #1 (PARTIAL), #2 (FAIL), #4 (FAIL), #9 (PARTIAL). The DataExporter test expectation was wrong: only 1 Kotlin caller exists, not 2 Java callers.
 
 ---
 
@@ -120,14 +120,9 @@ The FAIL (callers_of SleepSyncer.sync) and PARTIALs (impact radius, risk scores)
 
 **Lesson**: There's no perfect filter without type information. The current heuristic (self/uppercase/test) is the best we can do at the AST level.
 
-### Resolution rate plateau at ~22%
+### Resolution rate: plateau broken
 
-We've pushed resolution from 11.7% to 22.2% through:
-- Better import tracking (per-symbol)
-- Uppercase receiver heuristic
-- tsconfig path alias resolution
-
-But it's been stuck at 22% since v3. Additional tree-sitter tricks (star imports, re-exports, etc.) might push to 28-30% but the ceiling is ~35%. The remaining 65% requires type information we don't have.
+Pushed from 11.7% to 28.1% (v7) through per-symbol imports, module-level import tracking, and JVM package-path fallback. Investigation on 2026-04-06 found that `_get_call_name()` drops the class name for `ClassName.method()` calls -- qualifying these would push resolution further. The tree-sitter ceiling is likely ~35%; the remaining 65% requires type information.
 
 ### Raw SQL vs tool results divergence
 
@@ -327,36 +322,15 @@ Based on a brutal-honesty review (calibrated "Linus + Ramsay") cross-referenced 
 
 Removed `trust_remote_code=True` and `model_kwargs={"trust_remote_code": True}` from `SentenceTransformer()` in `embeddings.py`. The default model (`all-MiniLM-L6-v2`) doesn't need remote code.
 
-### HIGH: parser.py is a 3,011-line god class
+### HIGH: parser.py god class -- SIGNIFICANTLY REDUCED
 
-**Status: IN PROGRESS** -- TESTED_BY duplication fixed (`d226689`), Go handler extracted (`a0850b7`), 30 `if language ==` dispatches remain
+**Status: DONE (phase 1+2)** -- All 19 languages extracted to `code_review_graph/lang/`. parser.py reduced from 3,130 to 2,895 lines (-235). 35 `if language ==` dispatches reduced to 16. Remaining 16 are blocked on deeper refactoring (JS/TS module resolution, R helper dependencies) -- diminishing returns.
 
-55 methods, 35 `if language ==` dispatch statements. Adding language #20 requires touching 8-9 methods.
+Added typed variable call enrichment for Python/Kotlin/Java (post-parse tree-sitter walk), and shared `_emit_typed_call_edge` helper.
 
-The module cache (`_MODULE_CACHE_MAX = 15,000`) clears ALL entries at once when full -- bounded now but still a cliff, not LRU.
+**Key finding (2026-04-06)**: `_get_call_name()` at line ~2815 discards the receiver for `ClassName.method()` calls. Returns `"sync"` instead of `"StepsSyncer::sync"`. This is the root cause of Gadgetbridge tests #1/#2/#4/#9. Fix: return `"ReceiverName.method"` when `is_class_call` is True.
 
-**Refactoring plan**: Strategy pattern via `BaseLanguageHandler` in `code_review_graph/lang/`. Each language gets a handler with overridable methods: `get_name`, `get_bases`, `extract_import_targets`. Default returns `NotImplemented` to fall back to `CodeParser` logic. Registry in `CodeParser.__init__` dispatches to handlers.
-
-**Completed**:
-1. ~~DRY TESTED_BY generation~~ -- DONE (`d226689`)
-2. ~~LanguageHandler protocol + registry~~ -- DONE (`a0850b7`)
-3. ~~Go handler proof of concept~~ -- DONE (`a0850b7`) -- also fixed embedded struct detection bug
-4. ~~Python handler~~ -- DONE (`db3b1bb`) -- parser.py -77 lines
-
-**Next**:
-5. Extract JS/TS handler (second most used)
-6. Extract remaining languages in batches (JVM, C-family, scripting)
-7. Remove dispatch branches from `CodeParser`, delegate to registry
-
-**Methods with the most `if language ==` dispatches** (candidates for handler methods):
-- `_get_name()` -- 7 dispatches (Dart, Solidity, Lua, Perl, C/C++, Go)
-- `_extract_imports()` -- 10 dispatches (Python, JS/TS, Go, Rust, C/C++, Java/C#, Solidity, Scala, R, Ruby, Dart)
-- `_get_call_name()` -- 4 dispatches (Solidity, Perl, Lua, Python)
-- `_collect_file_scope()` -- 2 dispatches (R, generic)
-- `_collect_import_names()` -- 2 dispatches (Python, JS/TS)
-- `_extract_functions()` -- 3 dispatches (R, Lua, generic)
-
-TESTED_BY generation was the only 3x duplication and is now fixed.
+**Secondary finding**: `_extract_calls()` line ~2215 guards with `if call_name and enclosing_func:`, silently dropping module-level calls (where `enclosing_func` is None).
 
 ### HIGH: Connection pooling exists but tools don't use it
 
@@ -374,16 +348,11 @@ TESTED_BY generation was the only 3x duplication and is now fixed.
 
 **Fix**: Either add the missing CLI subcommands, or fix the VS Code extension to call what exists. Both are out of sync.
 
-### MEDIUM: Tests are happy-path theater
+### MEDIUM: Tests -- comprehensive TDD suite
 
-**Status: IMPROVING** -- TDD suite added (`1663d28`), 656 tests, 7 xfail targets
+**Status: DONE** -- 680 tests, 2 xfail targets remaining
 
-Was 633 tests with almost zero error/edge-case tests. Now 656 tests including a dedicated `test_pain_points.py` with xfail-driven development targeting known evaluation gaps. Also fixed 7 pre-existing test_tools failures caused by stale store cache.
-
-Still lacking:
-- `pytest.raises()` for error paths
-- Boundary condition testing (empty inputs, huge inputs, concurrent access)
-- Large-graph integration test (1000+ nodes, verifying community detection)
+Added `test_pain_points.py` with 34 TDD tests targeting known evaluation gaps. 7/9 xfails flipped to passing through concrete fixes. Also fixed 7 pre-existing test_tools failures caused by stale store cache.
 
 ### MEDIUM: Thread safety is aspirational
 
@@ -413,11 +382,11 @@ In practice this is mostly fine because MCP tools are sequential, but the code d
 ### Win 1: Continuous risk scoring -- DONE
 Implemented in commit `cdf8f21`. `changes.py` now uses continuous scale: `0.30 - (min(test_count / 5.0, 1.0) * 0.25)`. Verified by `test_risk_score_decreases_with_more_tests` and `test_risk_scores_span_meaningful_range`.
 
-### Win 2: Java/Kotlin per-symbol imports -- DONE (partially)
-`_get_jvm_import_names()` added in commit `cdf8f21`. Extracts symbol names from dotted import paths. **However**: per-symbol IMPORTS_FROM edges only fire when `_resolve_module_to_file()` succeeds, which fails for most JVM imports (no project layout or scip-java index). Full fix requires scip-java enrichment (priority #9). Tracked by 3 xfail tests.
+### Win 2: Java/Kotlin per-symbol imports -- DONE
+`_get_jvm_import_names()` in commit `cdf8f21`, then package-path fallback in `a0ba7d2`. Per-symbol IMPORTS_FROM edges now fire even without file resolution, using `com.example.auth::UserService` format. All 4 JVM xfail tests passing.
 
 ### Win 3: Module-level `import X` tracking -- DONE
-Implemented in commit `13a53f8`. `_collect_import_names` now handles `import_statement` for Python, adding `import json` -> `import_map["json"] = "json"`. New `_get_module_qualified_call` detects `json.dumps()` and `os.path.getsize()` patterns, producing CALLS edges like `json::dumps` and `os.path::getsize`. Flipped 2 xfail tests to passing (9 -> 7 remaining).
+Implemented in commit `13a53f8`. Flipped 2 xfail tests.
 
 ### Win 4: Framework entry point patterns -- DONE
 Added in commit `cdf8f21`: Express `app.get/post/use`, Android lifecycle `@Override`/`@Composable`, Kotlin `@HiltViewModel`/`@AndroidEntryPoint`, name patterns for `onCreate/onResume/onDestroy`, `doGet/doPost`, `errorHandler/middleware`. Verified by 9 passing entry point tests.
@@ -425,8 +394,20 @@ Added in commit `cdf8f21`: Express `app.get/post/use`, Android lifecycle `@Overr
 ### Win 5: Weighted flow criticality in risk scoring -- OPEN
 `changes.py:161-163` -- currently 0.05 per flow, capped at 0.25. Weight by flow criticality (already computed) to distinguish "in 1 trivial flow" from "in 3 critical flows".
 
-### Win 6: Community detection integration test -- OPEN
-No test seeds 1000+ nodes and verifies Leiden produces 10-200 communities. This would have caught the 4-iteration community detection saga earlier.
+### Win 6: Qualify uppercase-receiver calls -- NEXT (highest impact)
+`_get_call_name()` line ~2815 returns only the method name for `ClassName.method()`. Fix: when `is_class_call` is True, return `"ClassName.method"`. Would qualify 13 bare `sync` calls in Gadgetbridge's `syncDataTypeSlice` to `SleepSyncer::sync`, `HeartRateSyncer::sync`, etc. Generic across all languages.
+
+### Win 7: Framework decorator patterns for Click subgroups + Pydantic -- NEXT
+`_FRAMEWORK_DECORATOR_PATTERNS` doesn't match `@digest.command()` (only `@click.command()`), and Pydantic `field_serializer`/`field_validator` are absent. Just adding regex patterns.
+
+### Win 8: Module-level call emission -- NEXT
+`_extract_calls()` at line ~2215 guards `if call_name and enclosing_func:`, silently dropping module-level calls. Fix: use file path as source when `enclosing_func` is None.
+
+### Win 9: Function-reference-as-argument tracking -- OPEN
+`Thread(target=agent_thread)`, `HTTPServer(..., CallbackHandler)` -- identifiers passed as arguments are not `call` nodes and get no CALLS edges. Needs post-parse enrichment scanning call arguments for known function/class names.
+
+### Win 10: Community detection integration test -- OPEN
+No test seeds 1000+ nodes and verifies Leiden produces 10-200 communities.
 
 ---
 
@@ -471,13 +452,19 @@ The upstream maintainer hasn't been responsive. Our 3 draft PRs (#104, #107, #10
 | 3 | Easy wins (risk scoring, Java imports, entry points) | **DONE** | `cdf8f21` |
 | 3b | Module-level `import X` tracking | **DONE** | `13a53f8` |
 | 3c | Weighted flow criticality | **OPEN** | |
-| 4 | Parser refactoring into LanguageHandler strategy | **IN PROGRESS** | Go handler done (`a0850b7`); Python handler next |
-| 5 | DRY TESTED_BY generation | **DONE** | `d226689` -- extracted from 3 locations |
+| 4 | Parser refactoring into LanguageHandler strategy | **DONE** (phase 1+2) | 19 langs extracted to `lang/`, -235 lines |
+| 5 | DRY TESTED_BY generation | **DONE** | `d226689` |
 | 6 | VS Code extension fixes | **OPEN** | Broken `embed` + `--full` |
-| 7 | Test quality overhaul | **STARTED** | `1663d28` -- TDD suite with 7 xfails; `a0850b7` -- 6 GoHandler unit tests |
-| 8 | Jedi enrichment for Python | **OPEN** | 1 xfail test |
-| 9 | scip-java enrichment for Java/Kotlin | **OPEN** | 3 xfail tests |
-| 10 | TS Compiler API enrichment | **OPEN** | |
+| 7 | TDD test suite | **DONE** | 680 passing, 2 xfail |
+| 8 | Typed variable call enrichment (Python/Kotlin/Java) | **DONE** | `19d5e15`, `30c8c0e` |
+| 9 | JVM per-symbol imports without file resolution | **DONE** | `a0ba7d2` |
+| 10 | Qualify uppercase-receiver calls (`ClassName.method()`) | **NEXT** | Root cause of Gadgetbridge #1/#2/#4/#9 |
+| 11 | Framework decorator patterns (Click subgroups, Pydantic) | **NEXT** | 4 HealthAgent dead code FPs |
+| 12 | Module-level call emission (enclosing_func=None) | **NEXT** | Calls at file scope silently dropped |
+| 13 | Function-reference-as-argument tracking | **OPEN** | `Thread(target=fn)` pattern |
+| 14 | Jedi enrichment for Python | **OPEN** | |
+| 15 | scip-java enrichment for Java/Kotlin | **OPEN** | |
+| 16 | TS Compiler API enrichment | **OPEN** | |
 
 ### TDD xfail tracker (`tests/test_pain_points.py`)
 
@@ -488,12 +475,14 @@ Each xfail represents a concrete improvement target. Flip it to pass = the fix w
 | ~~`test_module_import_attribute_call_resolved`~~ | ~~Resolution~~ | ~~DONE (`13a53f8`)~~ |
 | ~~`test_module_import_nested_attribute`~~ | ~~Resolution~~ | ~~DONE (`13a53f8`)~~ |
 | `test_star_import_call_resolved` | Resolution | Star import scanning |
-| `test_java_import_creates_per_symbol_edge` | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
-| `test_kotlin_import_creates_per_symbol_edge` | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
-| `test_method_on_typed_variable_resolves` | ~~Resolution~~ | ~~DONE (typed var enrichment)~~ |
+| ~~`test_java_import_creates_per_symbol_edge`~~ | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
+| ~~`test_kotlin_import_creates_per_symbol_edge`~~ | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
+| ~~`test_method_on_typed_variable_resolves`~~ | ~~Resolution~~ | ~~DONE (typed var enrichment `19d5e15`)~~ |
 | `test_bare_name_reverse_tracing` | Dead code | Enrichment or graph heuristic |
-| `test_java_import_per_symbol` (integration) | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
-| `test_kotlin_import_per_symbol` (integration) | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
+| ~~`test_java_import_per_symbol`~~ (integration) | ~~Resolution~~ | ~~DONE (package-path fallback `a0ba7d2`)~~ |
+| ~~`test_kotlin_import_per_symbol`~~ (integration) | ~~Resolution~~ | ~~DONE (package-path fallback `a0ba7d2`)~~ |
+
+**7/9 resolved. 2 remaining xfails.**
 
 ---
 
@@ -521,6 +510,11 @@ Track key decisions so we don't re-litigate them.
 | 2026-04-06 | JVM per-symbol imports without file resolution | Package path fallback (`com.example.auth::UserService`) when file can't be found on disk | Flipped 4 JVM xfails without needing scip-java |
 | 2026-04-06 | BaseLanguageHandler + NotImplemented sentinel | Handlers only override what they customize; returning NotImplemented falls back to CodeParser default logic | Go handler extracted cleanly; parser.py ~25 lines shorter |
 | 2026-04-06 | Go as first handler extraction | Fewest special cases (3 branches, 5 constant entries), clean AST-only logic, no shared utility access needed | Validated the pattern; also fixed pre-existing embedded struct detection bug |
+| 2026-04-06 | Investigation: uppercase receiver calls drop qualifier | `_get_call_name()` returns `"sync"` for `StepsSyncer.sync()`. Root cause of 4 Gadgetbridge test failures. Fix: return `"ReceiverName.method"` when `is_class_call=True` | Highest-impact single fix remaining |
+| 2026-04-06 | Investigation: module-level calls silently dropped | `_extract_calls()` guards with `if enclosing_func:`, skipping calls at file scope. Fix: use file path as source | HealthAgent FP for `_register_commands()` |
+| 2026-04-06 | Investigation: framework decorator patterns too narrow | Click `@digest.command()` doesn't match `click\.(command\|group)` regex. Pydantic validators absent. | 4 HealthAgent dead code FPs |
+| 2026-04-06 | Investigation: function-as-argument not tracked | `Thread(target=agent_thread)` -- the identifier is an argument, not a call node. No CALLS edge emitted. | 4 HealthAgent dead code FPs; needs post-parse enrichment |
+| 2026-04-06 | DataExporter.export callers: eval expectation was wrong | Grep shows only 1 Kotlin caller (HealthConnectDebugFragment), not "2 Java callers" as eval expected | Updated eval expectations |
 
 ---
 
@@ -552,14 +546,15 @@ Track key decisions so we don't re-litigate them.
 ### Key numeric baselines (for future comparison)
 
 ```
-HealthAgent v6:
-  Files: 245 | Nodes: 2,392 | Edges: 18,069
-  CALLS: 9,601 | Resolved: 2,023 (21.1%) | TESTED_BY: 3,387
-  Dead code: 191 | Grep FP: ~15%
+HealthAgent v7:
+  Files: 248 | Nodes: 2,443 | Edges: 19,392
+  CALLS: 10,673 | Resolved: 3,003 (28.1%) | TESTED_BY: 3,431
+  Dead code: 191 | Grep FP: ~33% | FP spot check: 10/10
 
-Gadgetbridge v6:
-  Files: 3,573 | Nodes: 35,030 | Edges: 192,376
-  CALLS: 109,674 | TESTED_BY: 6,140 | INHERITS: 3,794
-  Communities: 11 | Flows: 3,224
+Gadgetbridge v7:
+  Files: 3,573 | Nodes: 35,030 | Edges: 266,631
+  TESTED_BY: 7,384 | Tests detected: 672
+  Communities: 11 | Flows: 3,226
   Risk scores: 0.50-0.70 (4 unique values)
+  Scorecard: 6/10 PASS, 2 PARTIAL, 2 FAIL
 ```

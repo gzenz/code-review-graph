@@ -32,6 +32,9 @@ _FRAMEWORK_DECORATOR_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"(before|after)_(request|response)", re.IGNORECASE),
     # CLI frameworks
     re.compile(r"click\.(command|group)", re.IGNORECASE),
+    re.compile(r"\w+\.(command|group)\b", re.IGNORECASE),  # Click subgroups: @mygroup.command()
+    # Pydantic validators/serializers
+    re.compile(r"(field|model)_(serializer|validator)", re.IGNORECASE),
     # Task queues
     re.compile(r"(celery\.)?(task|shared_task|periodic_task)", re.IGNORECASE),
     # Django

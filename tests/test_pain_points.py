@@ -357,6 +357,75 @@ class TestResolutionMethodCallOnImportedClass:
             for e in calls
         ), f"Expected UserRepository::findById, got: {[e.target for e in calls]}"
 
+    def test_kotlin_companion_object_call_qualified(self):
+        """StepsSyncer.sync() should produce a target containing StepsSyncer."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/Main.kt"),
+            (
+                b"package com.example\n"
+                b"object StepsSyncer {\n"
+                b"    fun sync(): Int = 0\n"
+                b"}\n"
+                b"fun main() {\n"
+                b"    StepsSyncer.sync()\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "StepsSyncer" in e.target and "sync" in e.target for e in calls
+        ), f"Expected StepsSyncer.sync target, got: {[e.target for e in calls]}"
+
+    def test_java_static_method_call_qualified(self):
+        """Math.abs() should produce a target containing Math."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/App.java"),
+            (
+                b"package com.example;\n"
+                b"public class App {\n"
+                b"    public int calc(int x) {\n"
+                b"        return Math.abs(x);\n"
+                b"    }\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "Math" in e.target and "abs" in e.target for e in calls
+        ), f"Expected Math.abs target, got: {[e.target for e in calls]}"
+
+    def test_python_classmethod_call_qualified(self):
+        """MyClass.create() should produce a target containing MyClass."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/app.py"),
+            (
+                b"class MyClass:\n"
+                b"    @classmethod\n"
+                b"    def create(cls): pass\n"
+                b"\n"
+                b"def main():\n"
+                b"    MyClass.create()\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "MyClass" in e.target and "create" in e.target for e in calls
+        ), f"Expected MyClass.create target, got: {[e.target for e in calls]}"
+
+    def test_module_level_call_emits_edge(self):
+        """Calls at file scope (not inside any function) should emit CALLS edges."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/init.py"),
+            (
+                b"def setup(): pass\n"
+                b"setup()\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "setup" in e.target for e in calls
+        ), f"Expected CALLS edge for module-level setup(), got: {[e.target for e in calls]}"
+
 
 # ===================================================================
 # 2. DEAD CODE FALSE POSITIVES
