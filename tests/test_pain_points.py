@@ -145,7 +145,6 @@ class TestResolutionStarImport:
     def setup_method(self):
         self.parser = CodeParser()
 
-    @pytest.mark.xfail(reason="star imports don't populate import_map")
     def test_star_import_call_resolved(self):
         """from sample_python import *; create_auth_service() should resolve."""
         _, edges = self.parser.parse_file(
@@ -158,6 +157,30 @@ class TestResolutionStarImport:
             f"Expected resolved call to sample_python::create_auth_service, got: "
             f"{[e.target for e in calls]}"
         )
+
+    def test_star_import_respects_dunder_all(self):
+        """__all__ should limit which names are exported via star import."""
+        from code_review_graph.parser import CodeParser
+        parser = CodeParser()
+        # Parse a module with __all__
+        p = parser._get_parser("python")
+        code = b'__all__ = ["public_func"]\ndef public_func(): pass\ndef _private(): pass\ndef other(): pass\n'
+        tree = p.parse(code)  # type: ignore[union-attr]
+        result = CodeParser._extract_dunder_all(tree.root_node)
+        assert result == {"public_func"}
+
+    def test_star_import_excludes_private_without_all(self):
+        """Without __all__, star import should exclude _private names."""
+        from code_review_graph.parser import CodeParser
+        parser = CodeParser()
+        p = parser._get_parser("python")
+        code = b'def public_func(): pass\ndef _private(): pass\nclass MyClass: pass\n'
+        tree = p.parse(code)  # type: ignore[union-attr]
+        result = CodeParser._extract_dunder_all(tree.root_node)
+        assert result is None  # No __all__ defined
+        _, defined = parser._collect_file_scope(tree.root_node, "python", code)
+        exported = {n for n in defined if not n.startswith("_")}
+        assert exported == {"public_func", "MyClass"}
 
 
 class TestResolutionJvmPerSymbolImport:

@@ -197,6 +197,7 @@ class CodeParser:
     def __init__(self) -> None:
         self._parsers: dict[str, object] = {}
         self._module_file_cache: dict[str, Optional[str]] = {}
+        self._star_export_cache: dict[str, set[str]] = {}
         self._tsconfig_resolver = TsconfigResolver()
         self._handlers: dict[str, "BaseLanguageHandler"] = {}
         self._register_handlers()
@@ -290,6 +291,12 @@ class CodeParser:
         import_map, defined_names = self._collect_file_scope(
             tree.root_node, language, source,
         )
+
+        # Expand star imports (from X import *) into import_map entries
+        if language == "python":
+            self._resolve_star_imports(
+                tree.root_node, file_path_str, language, import_map,
+            )
 
         # Walk the tree
         self._extract_from_tree(
@@ -2251,7 +2258,14 @@ class CodeParser:
                         line=child.start_point[0] + 1,
                     ))
             elif resolved and language == "python":
-                for name in self._get_python_import_names(child):
+                sym_names = self._get_python_import_names(child)
+                if not sym_names and any(
+                    c.type == "wildcard_import" for c in child.children
+                ):
+                    sym_names = list(self._get_exported_names(
+                        resolved, language,
+                    ))
+                for name in sym_names:
                     edges.append(EdgeInfo(
                         kind="IMPORTS_FROM",
                         source=file_path,
@@ -2770,6 +2784,98 @@ class CodeParser:
                 self._collect_import_names(child, language, source, import_map)
 
         return import_map, defined_names
+
+    # -- Star import resolution --
+
+    def _resolve_star_imports(
+        self,
+        root,
+        file_path: str,
+        language: str,
+        import_map: dict[str, str],
+        _resolving: Optional[frozenset[str]] = None,
+    ) -> None:
+        """Expand ``from X import *`` into individual import_map entries."""
+        if _resolving is None:
+            _resolving = frozenset()
+        for child in root.children:
+            if child.type != "import_from_statement":
+                continue
+            has_wildcard = False
+            module = None
+            for sub in child.children:
+                if sub.type == "wildcard_import":
+                    has_wildcard = True
+                elif sub.type == "dotted_name" and module is None:
+                    module = sub.text.decode("utf-8", errors="replace")
+            if not has_wildcard or not module:
+                continue
+            resolved = self._resolve_module_to_file(
+                module, file_path, language,
+            )
+            if not resolved or resolved in _resolving:
+                continue
+            exported = self._get_exported_names(
+                resolved, language, _resolving | {resolved},
+            )
+            for name in exported:
+                if name not in import_map:
+                    import_map[name] = module
+
+    def _get_exported_names(
+        self,
+        resolved_path: str,
+        language: str,
+        _resolving: frozenset[str] = frozenset(),
+    ) -> set[str]:
+        """Return the public names exported by a module file."""
+        if resolved_path in self._star_export_cache:
+            return self._star_export_cache[resolved_path]
+        try:
+            source = Path(resolved_path).read_bytes()
+        except (OSError, PermissionError):
+            return set()
+        parser = self._get_parser(language)
+        if not parser:
+            return set()
+        tree = parser.parse(source)  # type: ignore[union-attr]
+        # Respect __all__ if defined
+        all_names = self._extract_dunder_all(tree.root_node)
+        if all_names is not None:
+            self._star_export_cache[resolved_path] = all_names
+            return all_names
+        # Fall back to public top-level names
+        _, defined_names = self._collect_file_scope(
+            tree.root_node, language, source,
+        )
+        result = {n for n in defined_names if not n.startswith("_")}
+        self._star_export_cache[resolved_path] = result
+        return result
+
+    @staticmethod
+    def _extract_dunder_all(root) -> Optional[set[str]]:
+        """Extract names from ``__all__ = [...]``. Returns None if absent."""
+        for child in root.children:
+            if child.type != "assignment":
+                continue
+            left = child.children[0] if child.children else None
+            if not left or left.type != "identifier" or left.text != b"__all__":
+                continue
+            for rhs in child.children:
+                if rhs.type == "list":
+                    names: set[str] = set()
+                    for elem in rhs.children:
+                        if elem.type == "string":
+                            for sc in elem.children:
+                                if sc.type == "string_content":
+                                    val = sc.text.decode(
+                                        "utf-8", errors="replace",
+                                    )
+                                    if val:
+                                        names.add(val)
+                    return names
+            return set()
+        return None
 
     def _collect_import_names(
         self, node, language: str, source: bytes, import_map: dict[str, str],
