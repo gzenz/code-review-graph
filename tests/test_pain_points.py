@@ -110,32 +110,28 @@ class _GraphTestBase:
 class TestResolutionModuleLevelImport:
     """Pain point: `import json; json.dumps()` stays as bare `dumps`.
 
-    The parser only tracks `from X import Y` in import_map.  Module-level
-    imports (`import X`) are not tracked, so `X.func()` can't resolve.
+    The parser only tracked `from X import Y` in import_map.  Module-level
+    imports (`import X`) are now tracked, and module-qualified calls produce
+    edges like `json::dumps`.
     """
 
     def setup_method(self):
         self.parser = CodeParser()
 
-    @pytest.mark.xfail(reason="module-level import not tracked in import_map")
     def test_module_import_attribute_call_resolved(self):
         """import json; json.dumps(data) should produce a CALLS edge to json::dumps."""
-        _, edges = self.parser.parse_file(
-            FIXTURES / "resolution_python_module_import.py"
-        )
+        source = (FIXTURES / "resolution_python_module_import.py").read_bytes()
+        _, edges = self.parser.parse_bytes(Path("/src/app.py"), source)
         calls = [e for e in edges if e.kind == "CALLS"]
-        # Should find a resolved call to dumps (not bare)
         assert any("dumps" in e.target and "::" in e.target for e in calls), (
             f"Expected resolved call to json::dumps, got: "
             f"{[e.target for e in calls]}"
         )
 
-    @pytest.mark.xfail(reason="module-level import not tracked in import_map")
     def test_module_import_nested_attribute(self):
         """import os.path; os.path.getsize() should resolve."""
-        _, edges = self.parser.parse_file(
-            FIXTURES / "resolution_python_module_import.py"
-        )
+        source = (FIXTURES / "resolution_python_module_import.py").read_bytes()
+        _, edges = self.parser.parse_bytes(Path("/src/app.py"), source)
         calls = [e for e in edges if e.kind == "CALLS"]
         assert any("getsize" in e.target and "::" in e.target for e in calls), (
             f"Expected resolved call to os.path::getsize, got: "

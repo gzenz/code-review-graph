@@ -1827,6 +1827,43 @@ class CodeParser:
         last = text.rsplit(".", 1)[-1]
         return [last] if last else []
 
+    @staticmethod
+    def _get_module_qualified_call(
+        call_node, import_map: dict[str, str],
+    ) -> tuple[str, str] | None:
+        """Detect module-qualified calls like json.dumps() or os.path.getsize().
+
+        Returns (module_name, method_name) if the call's receiver is a known
+        imported module, otherwise None.
+        """
+        if not call_node.children:
+            return None
+        first = call_node.children[0]
+        if first.type not in ("attribute", "member_expression"):
+            return None
+        if not first.children:
+            return None
+        # Walk to the leftmost identifier through chained attributes
+        # e.g. os.path.getsize -> attribute(attribute(os, path), getsize)
+        receiver = first.children[0]
+        while (
+            receiver.type in ("attribute", "member_expression")
+            and receiver.children
+        ):
+            receiver = receiver.children[0]
+        if receiver.type not in ("identifier", "simple_identifier"):
+            return None
+        receiver_text = receiver.text.decode("utf-8", errors="replace")
+        if receiver_text not in import_map:
+            return None
+        # Extract the method name (rightmost identifier of the outer attribute)
+        for child in reversed(first.children):
+            if child.type in ("identifier", "property_identifier"):
+                method = child.text.decode("utf-8", errors="replace")
+                if method != receiver_text:
+                    return (receiver_text, method)
+        return None
+
     def _extract_calls(
         self,
         child,
@@ -1940,6 +1977,40 @@ class CodeParser:
                 file_path=file_path,
                 line=child.start_point[0] + 1,
             ))
+
+        # Module-qualified calls: json.dumps(), os.path.getsize(), etc.
+        # _get_call_name returns None for lowercase receivers in prod files,
+        # but if the receiver is an imported module we can still resolve.
+        if (
+            call_name is None
+            and enclosing_func
+            and import_map
+            and not _is_test_file(file_path)
+            and child.children
+        ):
+            mod_call = self._get_module_qualified_call(child, import_map)
+            if mod_call:
+                mod_name, method_name = mod_call
+                caller = self._qualify(
+                    enclosing_func, file_path, enclosing_class,
+                )
+                mod_path = import_map[mod_name]
+                resolved = self._resolve_module_to_file(
+                    mod_path, file_path, language,
+                )
+                if resolved:
+                    target = f"{resolved}::{method_name}"
+                else:
+                    # Can't resolve to file (stdlib/external), but still
+                    # record module origin: json::dumps, os.path::getsize
+                    target = f"{mod_path}::{method_name}"
+                edges.append(EdgeInfo(
+                    kind="CALLS",
+                    source=caller,
+                    target=target,
+                    file_path=file_path,
+                    line=child.start_point[0] + 1,
+                ))
 
         return False
 
@@ -2192,6 +2263,24 @@ class CodeParser:
                             # Last name is the alias (local name)
                             if names:
                                 import_map[names[-1]] = module
+            elif node.type == "import_statement":
+                # import json → {json: json}
+                # import os.path → {os: os.path}
+                # import X as Y → {Y: X}
+                for child in node.children:
+                    if child.type in ("dotted_name", "identifier"):
+                        mod = child.text.decode("utf-8", errors="replace")
+                        top_level = mod.split(".")[0]
+                        import_map[top_level] = mod
+                    elif child.type == "aliased_import":
+                        names = [
+                            sub.text.decode("utf-8", errors="replace")
+                            for sub in child.children
+                            if sub.type in ("identifier", "dotted_name")
+                        ]
+                        if len(names) >= 2:
+                            # import X as Y → {Y: X}
+                            import_map[names[-1]] = names[0]
 
         elif language in ("javascript", "typescript", "tsx"):
             # import { A, B } from './path' → {A: ./path, B: ./path}
