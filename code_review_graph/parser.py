@@ -930,6 +930,11 @@ class CodeParser:
             self._walk_java_typed_calls(
                 root, file_path, edges, import_map, None, None, {},
             )
+        elif language in ("javascript", "typescript", "tsx", "jsx"):
+            self._walk_js_typed_calls(
+                root, file_path, edges, import_map, None, None, {},
+                language,
+            )
 
     def _walk_py_typed_calls(
         self,
@@ -969,6 +974,7 @@ class CodeParser:
                 continue
 
             # Collect type annotation: ``x: SomeType = ...``
+            # Also infer from constructor: ``x = SomeClass(...)``
             if child.type == "assignment":
                 var_name = type_name = None
                 for sub in child.children:
@@ -981,6 +987,12 @@ class CodeParser:
                                     "utf-8", errors="replace",
                                 )
                                 break
+                    elif sub.type == "call" and type_name is None:
+                        func = sub.children[0] if sub.children else None
+                        if func and func.type == "identifier":
+                            fname = func.text.decode("utf-8", errors="replace")
+                            if fname[:1].isupper():
+                                type_name = fname
                 if var_name and type_name:
                     typed_vars[var_name] = type_name
 
@@ -1096,11 +1108,28 @@ class CodeParser:
                 )
                 continue
 
-            # Collect typed locals: val/var x: Type = ...
+            # Collect typed locals: val/var x: Type = ... or val x = SomeClass()
             if child.type == "property_declaration":
+                var_name = None
                 for sub in child.children:
                     if sub.type == "variable_declaration":
                         self._kt_collect_var_type(sub, typed_vars)
+                        for inner in sub.children:
+                            if inner.type == "simple_identifier" and var_name is None:
+                                var_name = inner.text.decode(
+                                    "utf-8", errors="replace",
+                                )
+                # Infer from constructor if no explicit type was found
+                if var_name and var_name not in typed_vars:
+                    for sub in child.children:
+                        if sub.type == "call_expression" and sub.children:
+                            func = sub.children[0]
+                            if func.type == "simple_identifier":
+                                fname = func.text.decode(
+                                    "utf-8", errors="replace",
+                                )
+                                if fname[:1].isupper():
+                                    typed_vars[var_name] = fname
 
             # Resolve receiver.method() calls
             if (
@@ -1257,7 +1286,126 @@ class CodeParser:
                         var_name = inner.text.decode(
                             "utf-8", errors="replace",
                         )
-        if type_name and var_name:
+                    # var x = new SomeClass() -- infer from constructor
+                    if (
+                        type_name == "var"
+                        and inner.type == "object_creation_expression"
+                    ):
+                        for oc in inner.children:
+                            if oc.type == "type_identifier":
+                                type_name = oc.text.decode(
+                                    "utf-8", errors="replace",
+                                )
+                                break
+        if type_name and type_name != "var" and var_name:
+            typed_vars[var_name] = type_name
+
+    # -- JS/TS typed-variable walker --
+
+    _JS_FUNC_TYPES = frozenset((
+        "function_declaration", "method_definition", "arrow_function",
+        "function", "generator_function_declaration",
+    ))
+
+    def _walk_js_typed_calls(
+        self,
+        node,
+        file_path: str,
+        edges: list[EdgeInfo],
+        import_map: dict[str, str],
+        enclosing_class: Optional[str],
+        enclosing_func: Optional[str],
+        typed_vars: dict[str, str],
+        language: str,
+    ) -> None:
+        for child in node.children:
+            # Enter class scope
+            if child.type == "class_declaration":
+                name = None
+                for sub in child.children:
+                    if sub.type == "type_identifier":
+                        name = sub.text.decode("utf-8", errors="replace")
+                        break
+                    if sub.type == "identifier":
+                        name = sub.text.decode("utf-8", errors="replace")
+                        break
+                self._walk_js_typed_calls(
+                    child, file_path, edges, import_map,
+                    name, enclosing_func, {}, language,
+                )
+                continue
+
+            # Enter function scope
+            if child.type in self._JS_FUNC_TYPES:
+                name = None
+                for sub in child.children:
+                    if sub.type in ("identifier", "property_identifier"):
+                        name = sub.text.decode("utf-8", errors="replace")
+                        break
+                self._walk_js_typed_calls(
+                    child, file_path, edges, import_map,
+                    enclosing_class, name or enclosing_func,
+                    dict(typed_vars), language,
+                )
+                continue
+
+            # Collect typed vars from variable declarations
+            if child.type in ("lexical_declaration", "variable_declaration"):
+                for sub in child.children:
+                    if sub.type == "variable_declarator":
+                        self._js_collect_typed_var(sub, typed_vars)
+
+            # Resolve receiver.method() calls
+            if (
+                child.type == "call_expression"
+                and enclosing_func
+                and child.children
+            ):
+                first = child.children[0]
+                if first.type == "member_expression" and first.children:
+                    recv = method = None
+                    for sub in first.children:
+                        if sub.type == "identifier" and recv is None:
+                            recv = sub.text.decode("utf-8", errors="replace")
+                        elif sub.type == "property_identifier":
+                            method = sub.text.decode(
+                                "utf-8", errors="replace",
+                            )
+                    if recv and recv in typed_vars and method:
+                        self._emit_typed_call_edge(
+                            typed_vars[recv], method, enclosing_func,
+                            file_path, enclosing_class, import_map,
+                            language, edges, child.start_point[0] + 1,
+                        )
+
+            self._walk_js_typed_calls(
+                child, file_path, edges, import_map,
+                enclosing_class, enclosing_func, typed_vars, language,
+            )
+
+    @staticmethod
+    def _js_collect_typed_var(
+        declarator_node, typed_vars: dict[str, str],
+    ) -> None:
+        var_name = type_name = None
+        for sub in declarator_node.children:
+            if sub.type == "identifier" and var_name is None:
+                var_name = sub.text.decode("utf-8", errors="replace")
+            elif sub.type == "type_annotation":
+                for tsub in sub.children:
+                    if tsub.type == "type_identifier":
+                        type_name = tsub.text.decode(
+                            "utf-8", errors="replace",
+                        )
+                        break
+            elif sub.type == "new_expression" and type_name is None:
+                for tsub in sub.children:
+                    if tsub.type == "identifier":
+                        fname = tsub.text.decode("utf-8", errors="replace")
+                        if fname[:1].isupper():
+                            type_name = fname
+                        break
+        if var_name and type_name:
             typed_vars[var_name] = type_name
 
     _MAX_AST_DEPTH = 180  # Guard against pathologically nested source files

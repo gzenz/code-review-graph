@@ -412,6 +412,116 @@ class TestResolutionMethodCallOnImportedClass:
             "MyClass" in e.target and "create" in e.target for e in calls
         ), f"Expected MyClass.create target, got: {[e.target for e in calls]}"
 
+    def test_python_constructor_infers_type(self):
+        """service = AuthService() then service.call() should resolve via constructor."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/app.py"),
+            (
+                b"from auth import AuthService\n"
+                b"def main():\n"
+                b"    service = AuthService('key')\n"
+                b"    service.authenticate('token')\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "authenticate" in e.target and "AuthService" in e.target
+            and "::" in e.target for e in calls
+        ), f"Expected AuthService::authenticate, got: {[e.target for e in calls]}"
+
+    def test_kotlin_constructor_infers_type(self):
+        """val syncer = SleepSyncer() (no type annotation) then syncer.sync() resolves."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/Main.kt"),
+            (
+                b"package com.example\n"
+                b"import com.example.syncers.SleepSyncer\n"
+                b"fun main() {\n"
+                b"    val syncer = SleepSyncer()\n"
+                b"    syncer.sync()\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "sync" in e.target and "SleepSyncer" in e.target and "::" in e.target
+            for e in calls
+        ), f"Expected SleepSyncer::sync, got: {[e.target for e in calls]}"
+
+    def test_java_var_constructor_infers_type(self):
+        """var svc = new AuthService() should infer type from object_creation_expression."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/App.java"),
+            (
+                b"package com.example;\n"
+                b"public class App {\n"
+                b"    public void main() {\n"
+                b"        var service = new AuthService();\n"
+                b"        service.authenticate();\n"
+                b"    }\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "authenticate" in e.target and "AuthService" in e.target
+            and "::" in e.target for e in calls
+        ), f"Expected AuthService::authenticate, got: {[e.target for e in calls]}"
+
+    def test_ts_typed_variable_resolves(self):
+        """const svc: AuthService = new AuthService(); svc.call() -> AuthService::call."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/app.ts"),
+            (
+                b"import { AuthService } from './auth';\n"
+                b"function main() {\n"
+                b"    const svc: AuthService = new AuthService('key');\n"
+                b"    svc.authenticate('token');\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "authenticate" in e.target and "AuthService" in e.target
+            and "::" in e.target for e in calls
+        ), f"Expected AuthService::authenticate, got: {[e.target for e in calls]}"
+
+    def test_ts_constructor_infers_type(self):
+        """const db = new Database() (no annotation) then db.query() resolves."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/app.ts"),
+            (
+                b"import { Database } from './db';\n"
+                b"function main() {\n"
+                b"    const db = new Database();\n"
+                b"    db.query('SELECT 1');\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "query" in e.target and "Database" in e.target
+            and "::" in e.target for e in calls
+        ), f"Expected Database::query, got: {[e.target for e in calls]}"
+
+    def test_js_constructor_infers_type(self):
+        """const svc = new AuthService() in .js file should also resolve."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/app.js"),
+            (
+                b"const AuthService = require('./auth');\n"
+                b"function main() {\n"
+                b"    const svc = new AuthService();\n"
+                b"    svc.authenticate();\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        assert any(
+            "authenticate" in e.target and "AuthService" in e.target
+            and "::" in e.target for e in calls
+        ), f"Expected AuthService::authenticate, got: {[e.target for e in calls]}"
+
     def test_module_level_call_emits_edge(self):
         """Calls at file scope (not inside any function) should emit CALLS edges."""
         _, edges = self.parser.parse_bytes(
