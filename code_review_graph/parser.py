@@ -1756,12 +1756,20 @@ class CodeParser:
                         file_path=file_path,
                         line=child.start_point[0] + 1,
                     ))
-            elif resolved and language in ("java", "kotlin", "csharp", "scala"):
+            elif language in ("java", "kotlin", "csharp", "scala"):
                 for name in self._get_jvm_import_names(child, language):
+                    if resolved:
+                        base = resolved
+                    else:
+                        # Use package path (dotted import minus class name)
+                        base = (
+                            imp_target.rsplit(".", 1)[0]
+                            if "." in imp_target else imp_target
+                        )
                     edges.append(EdgeInfo(
                         kind="IMPORTS_FROM",
                         source=file_path,
-                        target=f"{resolved}::{name}",
+                        target=f"{base}::{name}",
                         file_path=file_path,
                         line=child.start_point[0] + 1,
                     ))

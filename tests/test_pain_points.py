@@ -175,9 +175,6 @@ class TestResolutionJvmPerSymbolImport:
     def setup_method(self):
         self.parser = CodeParser()
 
-    @pytest.mark.xfail(
-        reason="JVM module-to-file resolution fails without scip-java index"
-    )
     def test_java_import_creates_per_symbol_edge(self):
         """import com.example.auth.UserService should create IMPORTS_FROM ::UserService."""
         _, edges = self.parser.parse_file(
@@ -194,9 +191,6 @@ class TestResolutionJvmPerSymbolImport:
             f"Expected ::User in import targets, got: {import_targets}"
         )
 
-    @pytest.mark.xfail(
-        reason="Kotlin module-to-file resolution fails without scip-java index"
-    )
     def test_kotlin_import_creates_per_symbol_edge(self):
         """import com.example.auth.UserRepository should create IMPORTS_FROM ::UserRepository."""
         _, edges = self.parser.parse_file(
@@ -681,9 +675,6 @@ class TestParserFixtureIntegration:
         assert "createUser" in func_names
         assert "errorHandler" in func_names
 
-    @pytest.mark.xfail(
-        reason="JVM module-to-file resolution fails without scip-java index"
-    )
     def test_java_import_per_symbol(self):
         """resolution_java_import.java should have IMPORTS_FROM with ::ClassName."""
         _, edges = self.parser.parse_file(
@@ -695,9 +686,6 @@ class TestParserFixtureIntegration:
             f"Expected ::UserService import, got: {import_targets}"
         )
 
-    @pytest.mark.xfail(
-        reason="Kotlin module-to-file resolution fails without scip-java index"
-    )
     def test_kotlin_import_per_symbol(self):
         """resolution_kotlin_import.kt should have IMPORTS_FROM with ::ClassName."""
         _, edges = self.parser.parse_file(

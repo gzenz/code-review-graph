@@ -488,12 +488,12 @@ Each xfail represents a concrete improvement target. Flip it to pass = the fix w
 | ~~`test_module_import_attribute_call_resolved`~~ | ~~Resolution~~ | ~~DONE (`13a53f8`)~~ |
 | ~~`test_module_import_nested_attribute`~~ | ~~Resolution~~ | ~~DONE (`13a53f8`)~~ |
 | `test_star_import_call_resolved` | Resolution | Star import scanning |
-| `test_java_import_creates_per_symbol_edge` | Resolution | Priority 9 (scip-java) |
-| `test_kotlin_import_creates_per_symbol_edge` | Resolution | Priority 9 (scip-java) |
+| `test_java_import_creates_per_symbol_edge` | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
+| `test_kotlin_import_creates_per_symbol_edge` | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
 | `test_method_on_typed_variable_resolves` | ~~Resolution~~ | ~~DONE (typed var enrichment)~~ |
 | `test_bare_name_reverse_tracing` | Dead code | Enrichment or graph heuristic |
-| `test_java_import_per_symbol` (integration) | Resolution | Priority 9 (scip-java) |
-| `test_kotlin_import_per_symbol` (integration) | Resolution | Priority 9 (scip-java) |
+| `test_java_import_per_symbol` (integration) | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
+| `test_kotlin_import_per_symbol` (integration) | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
 
 ---
 
@@ -518,6 +518,7 @@ Track key decisions so we don't re-litigate them.
 | 2026-04-06 | TDD-first for remaining work | 6 eval iterations taught us: write failing tests from known pain points, then iterate fixes | 9 xfails as concrete improvement targets |
 | 2026-04-06 | BaseLanguageHandler strategy pattern | Batch by method (not language) for extraction; NotImplemented sentinel for fallback | Go/Python/JS/TS/TSX extracted, -130 lines |
 | 2026-04-06 | Tree-sitter typed var enrichment over Jedi | Explicit type annotations (`x: T = ...`) sufficient for `x.method()` resolution; no runtime dep needed | Flipped `test_method_on_typed_variable_resolves` xfail |
+| 2026-04-06 | JVM per-symbol imports without file resolution | Package path fallback (`com.example.auth::UserService`) when file can't be found on disk | Flipped 4 JVM xfails without needing scip-java |
 | 2026-04-06 | BaseLanguageHandler + NotImplemented sentinel | Handlers only override what they customize; returning NotImplemented falls back to CodeParser default logic | Go handler extracted cleanly; parser.py ~25 lines shorter |
 | 2026-04-06 | Go as first handler extraction | Fewest special cases (3 branches, 5 constant entries), clean AST-only logic, no shared utility access needed | Validated the pattern; also fixed pre-existing embedded struct detection bug |
 
