@@ -90,6 +90,11 @@ def _get_store(repo_root: str | None = None) -> tuple[GraphStore, Path]:
     db_key = str(db_path)
     with _store_lock:
         store = _store_cache.get(db_key)
+        if store is not None:
+            try:
+                store._conn.execute("SELECT 1")
+            except Exception:
+                store = None
         if store is None:
             store = GraphStore(db_path)
             _store_cache[db_key] = store
