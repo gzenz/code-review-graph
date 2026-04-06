@@ -1743,6 +1743,15 @@ class CodeParser:
                         file_path=file_path,
                         line=child.start_point[0] + 1,
                     ))
+            elif resolved and language in ("java", "kotlin", "csharp", "scala"):
+                for name in self._get_jvm_import_names(child, language):
+                    edges.append(EdgeInfo(
+                        kind="IMPORTS_FROM",
+                        source=file_path,
+                        target=f"{resolved}::{name}",
+                        file_path=file_path,
+                        line=child.start_point[0] + 1,
+                    ))
 
     @staticmethod
     def _get_js_import_names(node) -> list[str]:
@@ -1799,6 +1808,24 @@ class CodeParser:
                     if idents:
                         names.append(idents[0])
         return names
+
+    @staticmethod
+    def _get_jvm_import_names(node, language: str) -> list[str]:
+        """Extract the imported symbol name from a Java/Kotlin/C#/Scala import.
+
+        For ``import com.pkg.ClassName`` returns ``["ClassName"]``.
+        Wildcard imports (``import com.pkg.*``) return nothing (can't resolve
+        a specific symbol).
+        """
+        text = node.text.decode("utf-8", errors="replace").strip()
+        # Strip leading keywords
+        for kw in ("import", "using", "static"):
+            text = text.replace(kw, "", 1).strip()
+        text = text.rstrip(";").strip()
+        if not text or text.endswith(".*") or text.endswith("._"):
+            return []
+        last = text.rsplit(".", 1)[-1]
+        return [last] if last else []
 
     def _extract_calls(
         self,

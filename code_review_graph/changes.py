@@ -152,7 +152,7 @@ def compute_risk_score(store: GraphStore, node: GraphNode) -> float:
     Scoring factors:
       - Flow participation: 0.05 per flow membership, capped at 0.25
       - Community crossing: 0.05 per caller from a different community, capped at 0.15
-      - Test coverage: 0.30 if no TESTED_BY edges, 0.05 if tested
+      - Test coverage: 0.30 (untested) scaling down to 0.05 (5+ TESTED_BY edges)
       - Security sensitivity: 0.20 if name matches security keywords
       - Caller count: callers / 20, capped at 0.10
     """
@@ -179,8 +179,8 @@ def compute_risk_score(store: GraphStore, node: GraphNode) -> float:
 
     # --- Test coverage ---
     tested_edges = store.get_edges_by_target(node.qualified_name)
-    has_test = any(e.kind == "TESTED_BY" for e in tested_edges)
-    score += 0.05 if has_test else 0.30
+    test_count = sum(1 for e in tested_edges if e.kind == "TESTED_BY")
+    score += 0.30 - (min(test_count / 5.0, 1.0) * 0.25)
 
     # --- Security sensitivity ---
     name_lower = node.name.lower()

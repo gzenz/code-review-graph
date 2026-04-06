@@ -49,6 +49,12 @@ _FRAMEWORK_DECORATOR_PATTERNS: list[re.Pattern[str]] = [
     # JS/TS frameworks
     re.compile(r"(Component|Injectable|Controller|Module|Guard|Pipe)", re.IGNORECASE),
     re.compile(r"(Subscribe|Mutation|Query|Resolver)", re.IGNORECASE),
+    # Express / Koa / Hono route handlers
+    re.compile(r"(app|router)\.(get|post|put|delete|patch|use|all)\b"),
+    # Android lifecycle
+    re.compile(r"@(Override|OnLifecycleEvent|Composable)", re.IGNORECASE),
+    # Kotlin coroutines / Android ViewModel
+    re.compile(r"(HiltViewModel|AndroidEntryPoint|Inject)", re.IGNORECASE),
     # AI/agent frameworks (pydantic-ai, langchain, etc.)
     re.compile(r"\w+\.tool\b", re.IGNORECASE),
 ]
@@ -67,6 +73,12 @@ _ENTRY_NAME_PATTERNS: list[re.Pattern[str]] = [
     # FastAPI lifecycle / dependency injection
     re.compile(r"^lifespan$"),
     re.compile(r"^get_db$"),
+    # Android Activity/Fragment lifecycle
+    re.compile(r"^on(Create|Start|Resume|Pause|Stop|Destroy|Bind|Receive)"),
+    # Servlet / JAX-RS
+    re.compile(r"^do(Get|Post|Put|Delete)$"),
+    # Express middleware signature
+    re.compile(r"^(middleware|errorHandler)$"),
 ]
 
 
