@@ -490,7 +490,7 @@ Each xfail represents a concrete improvement target. Flip it to pass = the fix w
 | `test_star_import_call_resolved` | Resolution | Star import scanning |
 | `test_java_import_creates_per_symbol_edge` | Resolution | Priority 9 (scip-java) |
 | `test_kotlin_import_creates_per_symbol_edge` | Resolution | Priority 9 (scip-java) |
-| `test_method_on_typed_variable_resolves` | Resolution | Priority 8 (Jedi) |
+| `test_method_on_typed_variable_resolves` | ~~Resolution~~ | ~~DONE (typed var enrichment)~~ |
 | `test_bare_name_reverse_tracing` | Dead code | Enrichment or graph heuristic |
 | `test_java_import_per_symbol` (integration) | Resolution | Priority 9 (scip-java) |
 | `test_kotlin_import_per_symbol` (integration) | Resolution | Priority 9 (scip-java) |
@@ -516,6 +516,8 @@ Track key decisions so we don't re-litigate them.
 | 2026-04-06 | Continuous risk scoring (0.30 -> 0.05 over 5 tests) | Binary scoring clustered all risk scores at 0.50-0.70 | Verified with monotonic decrease test |
 | 2026-04-06 | JVM per-symbol imports gated on module resolution | Per-symbol edges only useful if we know which file to point to | 3 xfail tests track when scip-java makes this work |
 | 2026-04-06 | TDD-first for remaining work | 6 eval iterations taught us: write failing tests from known pain points, then iterate fixes | 9 xfails as concrete improvement targets |
+| 2026-04-06 | BaseLanguageHandler strategy pattern | Batch by method (not language) for extraction; NotImplemented sentinel for fallback | Go/Python/JS/TS/TSX extracted, -130 lines |
+| 2026-04-06 | Tree-sitter typed var enrichment over Jedi | Explicit type annotations (`x: T = ...`) sufficient for `x.method()` resolution; no runtime dep needed | Flipped `test_method_on_typed_variable_resolves` xfail |
 | 2026-04-06 | BaseLanguageHandler + NotImplemented sentinel | Handlers only override what they customize; returning NotImplemented falls back to CodeParser default logic | Go handler extracted cleanly; parser.py ~25 lines shorter |
 | 2026-04-06 | Go as first handler extraction | Fewest special cases (3 branches, 5 constant entries), clean AST-only logic, no shared utility access needed | Validated the pattern; also fixed pre-existing embedded struct detection bug |
 

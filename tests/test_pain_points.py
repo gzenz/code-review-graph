@@ -268,9 +268,6 @@ class TestResolutionMethodCallOnImportedClass:
     def setup_method(self):
         self.parser = CodeParser()
 
-    @pytest.mark.xfail(
-        reason="type inference needed to resolve variable.method() calls"
-    )
     def test_method_on_typed_variable_resolves(self):
         """service.authenticate() where service: AuthService should resolve."""
         _, edges = self.parser.parse_bytes(

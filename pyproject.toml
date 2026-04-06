@@ -73,6 +73,9 @@ dev = [
     "pytest-asyncio>=0.23,<1",
     "ruff>=0.3.0,<1",
 ]
+enrichment = [
+    "jedi>=0.19.2",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["code_review_graph"]

@@ -386,6 +386,11 @@ class CodeParser:
             import_map=import_map, defined_names=defined_names,
         )
 
+        # Enrich: resolve method calls on type-annotated variables
+        self._enrich_typed_var_calls(
+            tree.root_node, language, file_path_str, edges, import_map,
+        )
+
         # Resolve bare call targets to qualified names using same-file definitions
         edges = self._resolve_call_targets(nodes, edges, file_path_str)
 
@@ -855,6 +860,139 @@ class CodeParser:
                     )
             resolved.append(edge)
         return resolved
+
+    # ------------------------------------------------------------------
+    # Typed-variable call enrichment (Python)
+    # ------------------------------------------------------------------
+
+    def _enrich_typed_var_calls(
+        self,
+        root,
+        language: str,
+        file_path: str,
+        edges: list[EdgeInfo],
+        import_map: dict[str, str],
+    ) -> None:
+        """Add CALLS edges for method calls on type-annotated variables.
+
+        Handles patterns like::
+
+            service: AuthService = AuthService('x', 'y')
+            service.authenticate('token')  # -> AuthService::authenticate
+        """
+        if language != "python":
+            return
+        self._walk_py_typed_calls(
+            root, file_path, edges, import_map, None, None, {},
+        )
+
+    def _walk_py_typed_calls(
+        self,
+        node,
+        file_path: str,
+        edges: list[EdgeInfo],
+        import_map: dict[str, str],
+        enclosing_class: Optional[str],
+        enclosing_func: Optional[str],
+        typed_vars: dict[str, str],
+    ) -> None:
+        for child in node.children:
+            # Enter class scope
+            if child.type == "class_definition":
+                name = None
+                for sub in child.children:
+                    if sub.type == "identifier":
+                        name = sub.text.decode("utf-8", errors="replace")
+                        break
+                self._walk_py_typed_calls(
+                    child, file_path, edges, import_map,
+                    name, enclosing_func, {},
+                )
+                continue
+
+            # Enter function scope (fresh typed_vars)
+            if child.type == "function_definition":
+                name = None
+                for sub in child.children:
+                    if sub.type == "identifier":
+                        name = sub.text.decode("utf-8", errors="replace")
+                        break
+                self._walk_py_typed_calls(
+                    child, file_path, edges, import_map,
+                    enclosing_class, name, {},
+                )
+                continue
+
+            # Collect type annotation: ``x: SomeType = ...``
+            if child.type == "assignment":
+                var_name = type_name = None
+                for sub in child.children:
+                    if sub.type == "identifier" and var_name is None:
+                        var_name = sub.text.decode("utf-8", errors="replace")
+                    elif sub.type == "type":
+                        for tsub in sub.children:
+                            if tsub.type == "identifier":
+                                type_name = tsub.text.decode(
+                                    "utf-8", errors="replace",
+                                )
+                                break
+                if var_name and type_name:
+                    typed_vars[var_name] = type_name
+
+            # Resolve ``var.method()`` where var has a known type annotation
+            if (
+                child.type == "call"
+                and enclosing_func
+                and child.children
+            ):
+                first = child.children[0]
+                if first.type == "attribute" and first.children:
+                    receiver = first.children[0]
+                    if receiver.type == "identifier":
+                        recv_text = receiver.text.decode(
+                            "utf-8", errors="replace",
+                        )
+                        if recv_text in typed_vars:
+                            method = None
+                            for sub in reversed(first.children):
+                                if (
+                                    sub.type == "identifier"
+                                    and sub is not receiver
+                                ):
+                                    method = sub.text.decode(
+                                        "utf-8", errors="replace",
+                                    )
+                                    break
+                            if method:
+                                type_name = typed_vars[recv_text]
+                                caller = self._qualify(
+                                    enclosing_func, file_path,
+                                    enclosing_class,
+                                )
+                                # Try to resolve the type through imports
+                                resolved = None
+                                if type_name in import_map:
+                                    resolved = self._resolve_module_to_file(
+                                        import_map[type_name],
+                                        file_path, "python",
+                                    )
+                                if resolved:
+                                    target = f"{resolved}::{type_name}.{method}"
+                                else:
+                                    target = f"{type_name}::{method}"
+                                edges.append(EdgeInfo(
+                                    kind="CALLS",
+                                    source=caller,
+                                    target=target,
+                                    file_path=file_path,
+                                    line=child.start_point[0] + 1,
+                                ))
+
+            # Recurse into other constructs (if/for/with/etc.)
+            self._walk_py_typed_calls(
+                child, file_path, edges, import_map,
+                enclosing_class, enclosing_func, typed_vars,
+            )
 
     _MAX_AST_DEPTH = 180  # Guard against pathologically nested source files
     _MAX_TEST_DESCRIPTION_LEN = 200  # Cap test description length in node names
