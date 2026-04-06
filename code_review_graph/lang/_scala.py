@@ -36,3 +36,19 @@ class ScalaHandler(BaseLanguageHandler):
         if base:
             return [base]
         return []
+
+    def get_bases(self, node, source: bytes) -> list[str]:
+        bases = []
+        for child in node.children:
+            if child.type == "extends_clause":
+                for sub in child.children:
+                    if sub.type == "type_identifier":
+                        bases.append(sub.text.decode("utf-8", errors="replace"))
+                    elif sub.type == "generic_type":
+                        for ident in sub.children:
+                            if ident.type == "type_identifier":
+                                bases.append(
+                                    ident.text.decode("utf-8", errors="replace"),
+                                )
+                                break
+        return bases

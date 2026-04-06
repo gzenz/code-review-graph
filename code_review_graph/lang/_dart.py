@@ -19,6 +19,16 @@ class DartHandler(BaseLanguageHandler):
     import_types = ["import_or_export"]
     call_types: list[str] = []  # Dart uses call_expression from fallback
 
+    def get_name(self, node, kind: str) -> str | None:
+        # function_signature has a return-type node before the identifier;
+        # search only for 'identifier' to avoid returning the return type name.
+        if node.type == "function_signature":
+            for child in node.children:
+                if child.type == "identifier":
+                    return child.text.decode("utf-8", errors="replace")
+            return None
+        return NotImplemented
+
     def extract_import_targets(self, node, source: bytes) -> list[str]:
         val = self._find_string_literal(node)
         if val:
@@ -34,3 +44,22 @@ class DartHandler(BaseLanguageHandler):
             if result is not None:
                 return result
         return None
+
+    def get_bases(self, node, source: bytes) -> list[str]:
+        bases = []
+        for child in node.children:
+            if child.type == "superclass":
+                for sub in child.children:
+                    if sub.type == "type_identifier":
+                        bases.append(sub.text.decode("utf-8", errors="replace"))
+                    elif sub.type == "mixins":
+                        for m in sub.children:
+                            if m.type == "type_identifier":
+                                bases.append(
+                                    m.text.decode("utf-8", errors="replace"),
+                                )
+            elif child.type == "interfaces":
+                for sub in child.children:
+                    if sub.type == "type_identifier":
+                        bases.append(sub.text.decode("utf-8", errors="replace"))
+        return bases

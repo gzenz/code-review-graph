@@ -18,3 +18,13 @@ class JavaHandler(BaseLanguageHandler):
         if len(parts) >= 2:
             return [parts[-1].rstrip(";")]
         return []
+
+    def get_bases(self, node, source: bytes) -> list[str]:
+        bases = []
+        for child in node.children:
+            if child.type in (
+                "superclass", "super_interfaces", "extends_type",
+                "implements_type", "type_identifier", "supertype",
+            ):
+                bases.append(child.text.decode("utf-8", errors="replace"))
+        return bases

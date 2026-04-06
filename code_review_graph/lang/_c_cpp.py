@@ -30,3 +30,12 @@ class CppHandler(_CBase):
     language = "cpp"
     class_types = ["class_specifier", "struct_specifier"]
     function_types = ["function_definition"]
+
+    def get_bases(self, node, source: bytes) -> list[str]:
+        bases = []
+        for child in node.children:
+            if child.type == "base_class_clause":
+                for sub in child.children:
+                    if sub.type == "type_identifier":
+                        bases.append(sub.text.decode("utf-8", errors="replace"))
+        return bases

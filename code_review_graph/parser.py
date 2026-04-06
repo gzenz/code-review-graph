@@ -2389,40 +2389,6 @@ class CodeParser:
             result = handler.get_name(node, kind)
             if result is not NotImplemented:
                 return result
-        # Dart: function_signature has a return-type node before the identifier;
-        # search only for 'identifier' to avoid returning the return type name.
-        if language == "dart" and node.type == "function_signature":
-            for child in node.children:
-                if child.type == "identifier":
-                    return child.text.decode("utf-8", errors="replace")
-            return None
-        # Solidity: constructor and receive/fallback have no identifier child
-        if language == "solidity":
-            if node.type == "constructor_definition":
-                return "constructor"
-            if node.type == "fallback_receive_definition":
-                for child in node.children:
-                    if child.type in ("receive", "fallback"):
-                        return child.text.decode("utf-8", errors="replace")
-        # Lua: function_declaration names may be dot_index_expression or
-        # method_index_expression (e.g. function Animal.new() / Animal:speak()).
-        # Return only the method name; the table name is used as parent_name
-        # in _extract_lua_constructs.
-        if language == "lua" and node.type == "function_declaration":
-            for child in node.children:
-                if child.type in ("dot_index_expression", "method_index_expression"):
-                    # Last identifier child is the method name
-                    for sub in reversed(child.children):
-                        if sub.type == "identifier":
-                            return sub.text.decode("utf-8", errors="replace")
-                    return None
-        # Perl: bareword for subroutine names, package for package names
-        if language == "perl":
-            for child in node.children:
-                if child.type == "bareword":
-                    return child.text.decode("utf-8", errors="replace")
-                if child.type == "package" and child.text != b"package":
-                    return child.text.decode("utf-8", errors="replace")
         # For C/C++: function names are inside function_declarator/pointer_declarator
         # Check these first to avoid matching the return type_identifier
         if language in ("c", "cpp") and kind == "function":
@@ -2479,64 +2445,7 @@ class CodeParser:
             result = handler.get_bases(node, source)
             if result is not NotImplemented:
                 return result
-        bases = []
-        if language in ("java", "csharp", "kotlin"):
-            # Look for superclass/interfaces in extends/implements clauses
-            for child in node.children:
-                if child.type in (
-                    "superclass", "super_interfaces", "extends_type",
-                    "implements_type", "type_identifier", "supertype",
-                    "delegation_specifier",
-                ):
-                    text = child.text.decode("utf-8", errors="replace")
-                    bases.append(text)
-        elif language == "scala":
-            for child in node.children:
-                if child.type == "extends_clause":
-                    for sub in child.children:
-                        if sub.type == "type_identifier":
-                            bases.append(sub.text.decode("utf-8", errors="replace"))
-                        elif sub.type == "generic_type":
-                            for ident in sub.children:
-                                if ident.type == "type_identifier":
-                                    bases.append(
-                                        ident.text.decode("utf-8", errors="replace")
-                                    )
-                                    break
-        elif language == "cpp":
-            # C++: base_class_clause contains type_identifiers
-            for child in node.children:
-                if child.type == "base_class_clause":
-                    for sub in child.children:
-                        if sub.type == "type_identifier":
-                            bases.append(sub.text.decode("utf-8", errors="replace"))
-        elif language == "solidity":
-            # contract Foo is Bar, Baz { ... }
-            for child in node.children:
-                if child.type == "inheritance_specifier":
-                    for sub in child.children:
-                        if sub.type == "user_defined_type":
-                            for ident in sub.children:
-                                if ident.type == "identifier":
-                                    bases.append(ident.text.decode("utf-8", errors="replace"))
-        elif language == "dart":
-            # class Foo extends Bar with Mixin implements Iface { ... }
-            # AST: superclass contains type_identifier (base) and mixins (with clause);
-            #      interfaces is a sibling of superclass.
-            for child in node.children:
-                if child.type == "superclass":
-                    for sub in child.children:
-                        if sub.type == "type_identifier":
-                            bases.append(sub.text.decode("utf-8", errors="replace"))
-                        elif sub.type == "mixins":
-                            for m in sub.children:
-                                if m.type == "type_identifier":
-                                    bases.append(m.text.decode("utf-8", errors="replace"))
-                elif child.type == "interfaces":
-                    for sub in child.children:
-                        if sub.type == "type_identifier":
-                            bases.append(sub.text.decode("utf-8", errors="replace"))
-        return bases
+        return []
 
     def _extract_import(self, node, language: str, source: bytes) -> list[str]:
         """Extract import targets as module/path strings."""
