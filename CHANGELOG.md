@@ -1,18 +1,36 @@
 # Changelog
 
-## [Unreleased]
+## [2.2.1] - 2026-04-07
 
 ### Added
-- **Decorator extraction in parser**: Functions and classes now store decorators/annotations in `node.extra["decorators"]` (Python, Java/Kotlin/C#, TypeScript)
-- **Expanded framework decorator patterns**: Dead code detection and entry point discovery now recognize pytest fixtures, Django signals, SQLAlchemy events, Spring annotations, Celery tasks, NestJS/Angular decorators, pydantic-ai agent tools
-- **Type annotation reference tracking**: Classes referenced in function parameter types or return types (e.g. Pydantic schemas) are no longer flagged as dead code
-- **Per-symbol IMPORTS_FROM edges**: JS/TS/TSX named imports (`import { A, B } from './mod'`) now create edges targeting individual functions/classes, not just the file -- eliminates ~320 FPs from frontend codebases
-- **ORM/framework base class exclusion**: Classes inheriting from known framework bases (Base, DeclarativeBase, BaseModel, BaseSettings, etc.) are no longer flagged as dead code
+- **Parallel parsing**: `ProcessPoolExecutor` for 3-5x faster builds (`CRG_PARSE_WORKERS`, `CRG_SERIAL_PARSE`)
+- **Lazy post-processing**: `postprocess="full"|"minimal"|"none"` parameter, `run_postprocess` MCP tool + CLI command
+- **SQLite-native BFS**: Recursive CTE replaces NetworkX for impact analysis (`CRG_BFS_ENGINE`)
+- **Configurable limits**: `CRG_MAX_IMPACT_NODES`, `CRG_MAX_IMPACT_DEPTH`, `CRG_MAX_BFS_DEPTH`, `CRG_MAX_SEARCH_RESULTS`
+- **Multi-hop dependents**: N-hop `find_dependents()` with `CRG_DEPENDENT_HOPS` (default 2) and 500-file cap
+- **Token-efficient output**: `detail_level="minimal"` on 8 tools for 40-60% token reduction
+- **`get_minimal_context` tool**: Ultra-compact entry point (~100 tokens) with task-based tool routing
+- **Token-efficient prompts**: All 5 MCP prompts rewritten with minimal-first workflows
+- **Incremental flow/community updates**: `incremental_trace_flows()`, `incremental_detect_communities()`
+- **Visualization aggregation**: Community/file/auto modes with drill-down for large graphs (`--mode`)
+- **Token-efficiency benchmarks**: 5 workflow benchmarks in `eval/token_benchmark.py`
+- **DB schema v6**: Pre-computed `community_summaries`, `flow_snapshots`, `risk_index` tables
+- **Token Efficiency Rules** in all skill templates and CLAUDE.md
+
+### Changed
+- CLI `build`/`update` support `--skip-flows`, `--skip-postprocess` flags
+- PostToolUse hook uses `--skip-flows` for faster incremental updates
+- VS Code extension schema version bumped to v6
 
 ### Fixed
-- **Dead code false positives**: Dunder methods (`__init__`, `__str__`, etc.) excluded from dead code results -- they are runtime-invoked and never have explicit callers
-- **Dead code false positives**: Decorated entry points (e.g. `@app.get`, `@pytest.fixture`) now correctly excluded via parser-populated decorator metadata
-- **Dead code false positives**: Alembic `upgrade`/`downgrade` and FastAPI `lifespan`/`get_db` recognized as entry points
+- mypy type errors in parallel parsing and context tool
+- Bandit false positive on prompt preamble string
+- Import sorting in graph.py, main.py, tools/__init__.py
+- Unused imports cleaned up in cli.py
+
+### Housekeeping
+- Gitignore: untrack `marketing-diagram.excalidraw`, `evaluate/results/`, `evaluate/reports/`
+- Updated FEATURES.md, LLM-OPTIMIZED-REFERENCE.md, CHANGELOG.md for v2.2.1
 
 ## [2.1.0] - 2026-04-03
 

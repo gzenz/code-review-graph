@@ -1,18 +1,24 @@
 # Features
 
-## v2.2.0 (Current)
-- **PreToolUse search enrichment**: Claude Code hook enriches Grep/Glob/Bash/Read results with callers, callees, execution flows, community membership, and test coverage. Zero-friction adoption -- agents get structural context passively.
-- **Multi-word FTS5 AND search**: Queries use AND logic so "graph store" finds GraphStore.
-- **Deduplicated query results**: `callers_of`/`callees_of`/`inheritors_of` no longer return duplicates.
-- **Ambiguous query auto-resolution**: Bare-name queries prefer non-test candidates.
-- **Test function deprioritization**: 0.5x score penalty in search results.
-- **Database migrations v1-v6**: Composite edge index for faster queries.
-- **589 tests** across 23 test files.
+## v2.2.1 (Current)
+- **24 MCP tools** (up from 22): Added `get_minimal_context` and `run_postprocess`.
+- **Parallel parsing**: `ProcessPoolExecutor` for 3-5x faster builds on large repos.
+- **Lazy post-processing**: `postprocess="full"|"minimal"|"none"` to skip expensive steps.
+- **SQLite-native BFS**: Recursive CTE replaces NetworkX for impact analysis (faster on large graphs).
+- **Token-efficient output**: `detail_level="minimal"` on 8 tools for 40-60% token reduction.
+- **`get_minimal_context`**: Ultra-compact entry point (~100 tokens) with task-based tool routing.
+- **Incremental flow/community updates**: Only re-trace affected flows, skip community re-detection when unaffected.
+- **Visualization aggregation**: Community/file/auto modes with drill-down for 5k+ node graphs.
+- **Token-efficiency benchmarks**: 5 workflow benchmarks in eval framework.
+- **Pre-computed summary tables**: DB schema v6 with `community_summaries`, `flow_snapshots`, `risk_index`.
+- **Configurable limits**: `CRG_MAX_IMPACT_NODES`, `CRG_MAX_IMPACT_DEPTH`, `CRG_DEPENDENT_HOPS`, etc.
+- **Multi-hop dependents**: N-hop dependent discovery (default 2) with 500-file cap.
+- **615 tests** across 22 test files.
 
 ## v2.1.0
 - **22 MCP tools** (up from 9): 13 new tools for flows, communities, architecture, refactoring, wiki, multi-repo, and risk-scored change detection.
 - **5 MCP prompts**: `review_changes`, `architecture_map`, `debug_issue`, `onboard_developer`, `pre_merge_check` workflow templates.
-- **18 languages** (up from 15): Added Dart, R, Perl support. Lua added in v2.1.0.
+- **18 languages** (up from 15): Added Dart, R, Perl support.
 - **Execution flows**: Trace call chains from entry points (HTTP handlers, CLI commands, tests), sorted by criticality score.
 - **Community detection**: Cluster related code entities via Leiden algorithm (igraph) or file-based grouping.
 - **Architecture overview**: Auto-generated architecture map with module summaries and cross-community coupling warnings.
@@ -21,7 +27,7 @@
 - **Wiki generation**: Auto-generate markdown wiki pages for each community with optional LLM summaries (ollama).
 - **Multi-repo registry**: Register multiple repositories, search across all of them with `cross_repo_search`.
 - **Full-text search**: FTS5 virtual table with porter stemming for hybrid keyword + vector search.
-- **Database migrations**: Versioned schema migrations (v1-v6) with automatic upgrade on startup.
+- **Database migrations**: Versioned schema migrations (v1-v5) with automatic upgrade on startup.
 - **Optional dependency groups**: `[embeddings]`, `[google-embeddings]`, `[communities]`, `[eval]`, `[wiki]`, `[all]`.
 - **Evaluation framework**: Benchmark suite with matplotlib visualization.
 - **TypeScript path resolution**: tsconfig.json paths/baseUrl alias resolution for imports.
@@ -115,7 +121,6 @@
 - **6 MCP tools** for full graph interaction
 - **3 review-first skills**: build-graph, review-delta, review-pr
 - **PostToolUse hooks** (Write|Edit|Bash) for automatic background updates
-- **PreToolUse hooks** for pre-commit change analysis via `detect-changes`
 - **FastMCP 3.0 compatible** stdio MCP server
 
 ## Privacy & Data
