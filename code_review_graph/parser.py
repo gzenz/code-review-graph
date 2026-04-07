@@ -294,6 +294,11 @@ class CodeParser:
         if not language:
             return [], []
 
+        # Skip likely bundled JS files (Rollup/Vite/webpack output).
+        # These are single files with thousands of lines that pollute the graph.
+        if language in ("javascript",) and len(source) > 500_000:
+            return [], []
+
         # Angular templates: regex-based extraction (no tree-sitter grammar)
         if language == "html":
             return self._parse_angular_template(path, source)
@@ -1624,9 +1629,13 @@ class CodeParser:
                     if sub.type == "identifier":
                         name = sub.text.decode("utf-8", errors="replace")
                         break
+                # Pre-scan constructor for parameter property types so all
+                # methods can resolve ``this.field.method()`` calls.
+                class_vars: dict[str, str] = {}
+                self._js_prescan_ctor_params(child, class_vars)
                 self._walk_js_typed_calls(
                     child, file_path, edges, import_map,
-                    name, enclosing_func, {}, language,
+                    name, enclosing_func, class_vars, language,
                 )
                 continue
 
@@ -1637,10 +1646,11 @@ class CodeParser:
                     if sub.type in ("identifier", "property_identifier"):
                         name = sub.text.decode("utf-8", errors="replace")
                         break
+                inner_vars = dict(typed_vars)
                 self._walk_js_typed_calls(
                     child, file_path, edges, import_map,
                     enclosing_class, name or enclosing_func,
-                    dict(typed_vars), language,
+                    inner_vars, language,
                 )
                 continue
 
@@ -1650,7 +1660,7 @@ class CodeParser:
                     if sub.type == "variable_declarator":
                         self._js_collect_typed_var(sub, typed_vars)
 
-            # Resolve receiver.method() calls
+            # Resolve receiver.method() and this.receiver.method() calls
             if (
                 child.type == "call_expression"
                 and enclosing_func
@@ -1672,6 +1682,34 @@ class CodeParser:
                             file_path, enclosing_class, import_map,
                             language, edges, child.start_point[0] + 1,
                         )
+                    # Handle this.field.method(): outer member_expression has
+                    # inner member_expression (this.field) + property_identifier
+                    elif method and not recv:
+                        inner = first.children[0]
+                        if (
+                            inner.type == "member_expression"
+                            and inner.children
+                        ):
+                            inner_recv = inner_prop = None
+                            for sub in inner.children:
+                                if sub.type == "this":
+                                    inner_recv = "this"
+                                elif sub.type == "property_identifier":
+                                    inner_prop = sub.text.decode(
+                                        "utf-8", errors="replace",
+                                    )
+                            if (
+                                inner_recv == "this"
+                                and inner_prop
+                                and inner_prop in typed_vars
+                            ):
+                                self._emit_typed_call_edge(
+                                    typed_vars[inner_prop], method,
+                                    enclosing_func, file_path,
+                                    enclosing_class, import_map,
+                                    language, edges,
+                                    child.start_point[0] + 1,
+                                )
 
             self._walk_js_typed_calls(
                 child, file_path, edges, import_map,
@@ -1702,6 +1740,61 @@ class CodeParser:
                         break
         if var_name and type_name:
             typed_vars[var_name] = type_name
+
+    @staticmethod
+    def _js_prescan_ctor_params(
+        class_node, typed_vars: dict[str, str],
+    ) -> None:
+        """Pre-scan a class for constructor parameter property types.
+
+        Handles ``constructor(private service: AuthService)`` — the parameter
+        name becomes a class field accessible via ``this.service`` in all methods.
+        """
+        for child in class_node.children:
+            if child.type != "class_body":
+                continue
+            for member in child.children:
+                if member.type != "method_definition":
+                    continue
+                # Find the constructor method
+                is_ctor = False
+                for sub in member.children:
+                    if sub.type == "property_identifier":
+                        if sub.text == b"constructor":
+                            is_ctor = True
+                        break
+                if not is_ctor:
+                    continue
+                # Scan formal_parameters for typed parameter properties
+                for sub in member.children:
+                    if sub.type != "formal_parameters":
+                        continue
+                    for param in sub.children:
+                        if param.type != "required_parameter":
+                            continue
+                        has_modifier = False
+                        var_name = type_name = None
+                        for psub in param.children:
+                            if psub.type in (
+                                "accessibility_modifier",
+                                "override_modifier",
+                                "readonly",
+                            ):
+                                has_modifier = True
+                            elif psub.type == "identifier" and var_name is None:
+                                var_name = psub.text.decode(
+                                    "utf-8", errors="replace",
+                                )
+                            elif psub.type == "type_annotation":
+                                for tsub in psub.children:
+                                    if tsub.type == "type_identifier":
+                                        type_name = tsub.text.decode(
+                                            "utf-8", errors="replace",
+                                        )
+                                        break
+                        if has_modifier and var_name and type_name:
+                            typed_vars[var_name] = type_name
+                return  # Only one constructor per class
 
     _MAX_AST_DEPTH = 180  # Guard against pathologically nested source files
     _MAX_TEST_DESCRIPTION_LEN = 200  # Cap test description length in node names

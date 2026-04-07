@@ -942,3 +942,16 @@ class PlainClass:
         calls = [e for e in edges if e.kind == "CALLS"]
         targets = {e.target for e in calls}
         assert any("processEvent" in t for t in targets)
+
+    def test_constructor_param_property_this_call(self):
+        """this.service.method() resolves via constructor parameter type."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/app/my.component.ts"),
+            b"class Comp {\n"
+            b"  constructor(private svc: AuthService) {}\n"
+            b"  run() { this.svc.authenticate('x'); }\n"
+            b"}\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert "AuthService::authenticate" in targets

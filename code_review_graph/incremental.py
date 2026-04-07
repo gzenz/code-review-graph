@@ -43,6 +43,8 @@ DEFAULT_IGNORE_PATTERNS = [
     "*.min.css",
     "*.map",
     "*.lock",
+    "*.bundle.js",
+    "cdk.out/**",
     "package-lock.json",
     "yarn.lock",
     "*.db",
