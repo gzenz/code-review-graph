@@ -1,6 +1,6 @@
 # code-review-graph: Strategic Analysis & Future Direction
 
-Last updated: 2026-04-07 (v10 + bare-name resolution + JS/TS namespace/require/re-export)
+Last updated: 2026-04-07 (v10 + transitive TESTED_BY + resolution ceiling analysis)
 
 This document captures what we've learned across 6 evaluation iterations, what's fundamentally hard, what approaches we've tried (and why some failed), and where the project should go next. It's meant to be a living reference so we don't repeat mistakes and can make informed architecture decisions.
 
@@ -12,7 +12,7 @@ This document captures what we've learned across 6 evaluation iterations, what's
 2. [What We Built & What Worked](#2-what-we-built--what-worked)
 3. [Ideas We Tried That Failed or Had Limits](#3-ideas-we-tried-that-failed-or-had-limits)
 4. [The Fundamental Question: Is Tree-Sitter Enough?](#4-the-fundamental-question-is-tree-sitter-enough)
-5. [Where Resolution Actually Fails (the 79% breakdown)](#5-where-resolution-actually-fails-the-79-breakdown)
+5. [Where Resolution Actually Fails (the remaining ~55%)](#5-where-resolution-actually-fails-the-remaining-55)
 6. [Architecture Options: Stay, Augment, or Replace](#6-architecture-options-stay-augment-or-replace)
 7. [Recommended Path: Pluggable Enrichment](#7-recommended-path-pluggable-enrichment)
 8. [Code Quality Audit & Refactoring Needs](#8-code-quality-audit--refactoring-needs)
@@ -23,7 +23,7 @@ This document captures what we've learned across 6 evaluation iterations, what's
 
 ---
 
-## 1. Where We Are (v6 Scorecard)
+## 1. Where We Are (v10 Scorecard)
 
 ### HealthAgent (Python/TypeScript, 253 files)
 
@@ -173,7 +173,7 @@ Tree-sitter is a parser, not a compiler. It gives us the syntax tree but NOT the
 
 ---
 
-## 5. Where Resolution Actually Fails (the 79% breakdown)
+## 5. Where Resolution Actually Fails (the remaining ~55%)
 
 Based on analysis of the resolution pipeline (`parser.py` lines 2082-2294):
 
@@ -263,6 +263,12 @@ The strategic recommendation is **Option B (Hybrid)** implemented incrementally:
 - ~~JS/TS typed-variable walker~~ DONE
 - Achieved 28.6% resolution (HealthAgent), 32.6% (Gadgetbridge), Gadgetbridge 10/10
 
+### Phase 0b: Post-build enrichments -- DONE
+- Post-build bare-name resolution (`9038765`): batch-qualifies bare CALLS targets against node table, disambiguates via imports
+- JS/TS namespace imports, CommonJS require(), re-exports (`0aa4d38`)
+- Transitive TESTED_BY (`04327b6`): `get_transitive_tests()` follows CALLS->TESTED_BY chains for `tests_for` and risk scoring
+- Achieved **45.6% resolution** (HealthAgent), **36.3%** (Gadgetbridge)
+
 ### Phase 1: Python enrichment via Jedi -- DONE
 - Jedi is pure Python, no subprocess needed
 - Optional dependency (`pyproject.toml` enrichment extra: `jedi>=0.19.2`)
@@ -283,18 +289,18 @@ The strategic recommendation is **Option B (Hybrid)** implemented incrementally:
 - Expected impact: Java/Kotlin resolution from ~10% to ~70%
 - Dependency: `protobuf` Python library for SCIP consumption (lightweight)
 
-### Phase 3a: TS/JS tree-sitter quick wins (Priority I, Tier 1)
-- **Namespace imports**: `import * as utils from './utils'` -- add `namespace_import` handling to `_collect_js_import_names()`, then `utils.fn()` resolves via existing dotted-name path
-- **CommonJS require**: `const X = require('mod')` -- detect in AST walker, add to import_map like ES6 imports
-- **Re-export tracking**: Extend star import resolution (currently Python-only) to JS/TS `export * from` and `export { X } from` patterns
-- Expected impact: resolves common patterns missed by current parser without new dependencies
+### Phase 3a: TS/JS tree-sitter quick wins (Priority I, Tier 1) -- DONE
+- **Namespace imports**: `import * as utils from './utils'` -- `namespace_import` handling in `_collect_js_import_names()`, `utils.fn()` resolves via dotted-name path
+- **CommonJS require**: `const X = require('mod')` -- detected in AST walker, added to import_map like ES6 imports
+- **Re-export tracking**: `export { X } from './mod'` and `export * from './mod'` create IMPORTS_FROM edges and populate import_map
+- Implemented in commit `0aa4d38`, 6 tests
 
-### Phase 3b: TypeScript enrichment via TS Compiler API (4-6 weeks)
-- Node.js subprocess invoking ts.createProgram()
-- `program.getTypeChecker().getSymbolAtLocation(node)` resolves method calls
-- JSON IPC between Python and Node.js
-- Would resolve SDK symbols (useState, Column, Depends) unreachable by tree-sitter
-- Expected impact: TypeScript resolution from ~30% to ~75%
+### Phase 3b: TypeScript enrichment via TS Compiler API -- NOT WORTH DOING
+- Analysis (2026-04-07): remaining unresolved TS calls are **100% external library/framework API** (Playwright: toBeVisible/getByText/goto/locator/click, React: useState, stdlib: JSON.stringify/fetch/String)
+- None of these have local source definitions -- cross-file import tracing would resolve zero additional calls
+- Per-language breakdown: Python 52.8%, TSX 46.4%, TypeScript 26.5%, Kotlin 30.9%
+- The TS resolution ceiling is external API calls, not missing import graph logic
+- Would require 4-6 weeks of Node.js subprocess + JSON IPC for no measurable impact on current eval projects
 
 ### Phase 4: Go enrichment (2-4 weeks)
 - Go already has `golang.org/x/tools/go/callgraph` in stdlib
@@ -393,7 +399,7 @@ In practice this is mostly fine because MCP tools are sequential, but the code d
 | Connection pooling | HIGH | **FIXED** (`cdf8f21`, `ec40e5b`) |
 | Parser god class | HIGH | **DONE** -- 19 langs to `lang/`, -235 lines, 16 dispatches remain |
 | VS Code extension | HIGH | STILL OPEN |
-| Test quality | MEDIUM | **DONE** -- 703 tests, 53 TDD pain point tests, 1 xfail |
+| Test quality | MEDIUM | **DONE** -- 762 tests, 59 TDD pain point tests, 0 xfail |
 | Thread safety | MEDIUM | STILL OPEN |
 
 ---
@@ -475,11 +481,11 @@ The upstream maintainer hasn't been responsive. Our 3 draft PRs (#104, #107, #10
 | 2 | Wire connection pooling to tools | **DONE** | `cdf8f21` |
 | 3 | Easy wins (risk scoring, Java imports, entry points) | **DONE** | `cdf8f21` |
 | 3b | Module-level `import X` tracking | **DONE** | `13a53f8` |
-| 3c | Weighted flow criticality | **OPEN** | |
-| 4 | Parser refactoring into LanguageHandler strategy | **DONE** (phase 1+2) | 19 langs extracted to `lang/`, -235 lines |
+| 3c | Weighted flow criticality | **DONE** | `48c38dd` |
+| 4 | Parser refactoring into LanguageHandler strategy | **DONE** | 19 langs extracted to `lang/` |
 | 5 | DRY TESTED_BY generation | **DONE** | `d226689` |
 | 6 | VS Code extension fixes | **OPEN** | Broken `embed` + `--full` |
-| 7 | TDD test suite | **DONE** | 699 passing, 1 xfail |
+| 7 | TDD test suite | **DONE** | 762 passing, 0 xfail |
 | 8 | Typed variable call enrichment (Python/Kotlin/Java) | **DONE** | `19d5e15`, `30c8c0e` |
 | 8b | Constructor-based type inference (Py/Kt/Java/TS/JS) | **DONE** | `ef495b3` |
 | 9 | JVM per-symbol imports without file resolution | **DONE** | `a0ba7d2` |
@@ -489,10 +495,13 @@ The upstream maintainer hasn't been responsive. Our 3 draft PRs (#104, #107, #10
 | 13 | Function-reference-as-argument tracking | **DONE** | `0c88d4b` |
 | 14 | Star import resolution (`from X import *`) | **DONE** | `cae05b2` |
 | 15 | JS/TS typed-variable walker | **DONE** | `ef495b3` |
-| 16 | Jedi enrichment for Python | **DONE** | `326bcce` -- 8 calls resolved in HealthAgent |
-| 17 | Override method dead code check | **DONE** | 146->139 dead code, 7 connector sync methods no longer FP |
-| 18 | scip-java enrichment for Java/Kotlin | **OPEN** | |
-| 19 | TS Compiler API enrichment | **OPEN** | |
+| 16 | Jedi enrichment for Python | **DONE** | `326bcce` |
+| 17 | Override method dead code check | **DONE** | `d25f8a0` |
+| 18 | Post-build bare-name CALLS resolution | **DONE** | `9038765` -- +2,294 resolved in HealthAgent |
+| 19 | JS/TS namespace imports, require(), re-exports | **DONE** | `0aa4d38` |
+| 20 | Transitive TESTED_BY (tests_for + risk scoring) | **DONE** | `04327b6` |
+| 21 | scip-java enrichment for Java/Kotlin | **OPEN** | |
+| 22 | TS Compiler API enrichment | **NOT WORTH DOING** | Resolution ceiling is external API calls |
 
 ### TDD xfail tracker (`tests/test_pain_points.py`)
 
@@ -510,7 +519,7 @@ Each xfail represents a concrete improvement target. Flip it to pass = the fix w
 | ~~`test_java_import_per_symbol`~~ (integration) | ~~Resolution~~ | ~~DONE (package-path fallback `a0ba7d2`)~~ |
 | ~~`test_kotlin_import_per_symbol`~~ (integration) | ~~Resolution~~ | ~~DONE (package-path fallback `a0ba7d2`)~~ |
 
-**9/9 resolved. 0 remaining xfails.**
+**9/9 resolved. 0 remaining xfails. 3 transitive TESTED_BY tests added.**
 
 ---
 
@@ -551,6 +560,9 @@ Track key decisions so we don't re-litigate them.
 | 2026-04-06 | Override method dead code check via INHERITS traversal | When `self.sync()` in BaseConnector resolves to `BaseConnector.sync`, subclass overrides had zero callers. Fix: in find_dead_code(), check if parent class method has callers, mark overrides alive | 7 connector .sync() methods no longer FP. safe_request correctly stays dead (genuinely unused) |
 | 2026-04-06 | safe_request is genuinely dead, not a FP | grep confirms safe_request is defined but never called anywhere in HealthAgent. FP spot check expectation was wrong | FP spot check is actually 10/10 PASS |
 | 2026-04-07 | Weighted flow criticality in risk scoring | Flat 0.05/flow couldn't distinguish trivial vs critical flow membership. Sum actual criticality values (0.0-1.0) with fallback to flat count | Better risk differentiation for changed functions in critical flows |
+| 2026-04-07 | Post-build bare-name CALLS resolution | Tree-sitter parser can't resolve cross-file calls at parse time. Batch post-build step matches bare names against node table, disambiguates via IMPORTS_FROM edges | +2,294 resolved in HealthAgent (28.6% -> 45.6%), +5,625 in Gadgetbridge (32.6% -> 36.3%) |
+| 2026-04-07 | Transitive TESTED_BY in tests_for and risk scoring | Direct TESTED_BY misses indirect coverage (A calls B, B is tested, A shows as untested). 1-hop CALLS->TESTED_BY transitive lookup with `indirect` flag | Fixes last Gadgetbridge scorecard PARTIAL (RecordedWorkoutSyncer) |
+| 2026-04-07 | TS/JS Tier 2 NOT WORTH DOING | Analyzed unresolved TS calls: 100% external API (Playwright, React, stdlib). Cross-file import tracing would resolve zero additional calls | Saved 4-6 weeks of Node.js subprocess work for zero impact |
 
 ---
 
