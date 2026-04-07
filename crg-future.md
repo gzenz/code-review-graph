@@ -1,6 +1,6 @@
 # code-review-graph: Strategic Analysis & Future Direction
 
-Last updated: 2026-04-07 (v9 + upstream v2.2.1 merge + weighted flow criticality)
+Last updated: 2026-04-07 (v10 + bare-name resolution + JS/TS namespace/require/re-export)
 
 This document captures what we've learned across 6 evaluation iterations, what's fundamentally hard, what approaches we've tried (and why some failed), and where the project should go next. It's meant to be a living reference so we don't repeat mistakes and can make informed architecture decisions.
 
@@ -27,39 +27,40 @@ This document captures what we've learned across 6 evaluation iterations, what's
 
 ### HealthAgent (Python/TypeScript, 253 files)
 
-| Metric | v1 | v3 | v5 | v6 | v7 | v8 | v9 | Trend |
-|---|---|---|---|---|---|---|---|---|
-| Total edges | 22,737 | 16,594 | 16,650 | 19,362 | 19,392 | 21,296 | 21,308 | +2k from enrichments |
-| Resolution rate | 11.7% | 22.2% | 22.2% | 28.0% | 28.1% | 28.6% | 28.6% | Tree-sitter ceiling reached |
-| Resolved CALLS | 1,736 | 2,016 | 2,016 | 2,976 | 3,003 | 3,525 | 3,537 | +560 from typed vars + Jedi |
-| TESTED_BY | 3,603 | 3,387 | 3,387 | 3,420 | 3,431 | 3,482 | 3,510 | Stable |
-| Decorator nodes | present | 0 | 240 | 244 | 244 | 244 | 244 | Fixed in v4 |
-| Dead code (tool) | 577 | 648 | 237 | 191 | 191 | ~150 | 139 | -52 from v6 |
-| Grep FP rate | 92% | 90% | 27% | ? | ~33% | ~53% | ~53% | Concentrated FPs (smaller set) |
-| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | 10/10 | 10/10 | safe_request genuinely dead |
+| Metric | v1 | v3 | v5 | v6 | v7 | v8 | v9 | v10 | Trend |
+|---|---|---|---|---|---|---|---|---|---|
+| Total edges | 22,737 | 16,594 | 16,650 | 19,362 | 19,392 | 21,296 | 21,308 | 21,926 | +618 from bare-name resolution |
+| Resolution rate | 11.7% | 22.2% | 22.2% | 28.0% | 28.1% | 28.6% | 28.6% | **45.6%** | **+17pp** from bare-name resolution |
+| Resolved CALLS | 1,736 | 2,016 | 2,016 | 2,976 | 3,003 | 3,525 | 3,537 | 5,831 | +2,294 from bare-name resolution |
+| TESTED_BY | 3,603 | 3,387 | 3,387 | 3,420 | 3,431 | 3,482 | 3,510 | 3,570 | Stable |
+| Decorator nodes | present | 0 | 240 | 244 | 244 | 244 | 244 | 244 | Fixed in v4 |
+| Dead code (tool) | 577 | 648 | 237 | 191 | 191 | ~150 | 139 | ~140 | Stable |
+| Grep FP rate | 92% | 90% | 27% | ? | ~33% | ~53% | ~53% | ~47% | Improving |
+| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | safe_request genuinely dead |
 
 ### Gadgetbridge (Java/Kotlin, 3573 files)
 
-| Metric | Before fixes | v6 | v7 | v8 | v9 | Target |
-|---|---|---|---|---|---|---|
-| callees_of(syncDataTypeSlice) | 0 | 14 | 13 (bare `sync`) | 14 (13 qualified + mutableListOf) | 14 | PASS |
-| callees_of(SleepSyncer.sync) | 1 | 18 | 15 | PASS | PASS | PASS |
-| callers_of(SleepSyncer.sync) | 0 | 0 | 0 | PASS (via qualified name) | PASS | PASS |
-| callers_of(DataExporter.export) | 0 | 3 | 0 external | 1 Kotlin caller | 1 Kotlin caller | PASS |
-| tests_for(RecordedWorkoutSyncer) | 0 | WorkoutSyncerUtilsTest | PASS | PASS | PARTIAL (0 direct, transitive exists) | PASS |
-| Communities | 0 | 11 | 11 | 11 | 11 | 10-50 |
-| Flows | ~100 | 3,224 | 3,226 | 3,059 | 3,059 | lifecycle entries |
-| TESTED_BY edges | 0 | 6,140 | 7,384 | - | 7,409 | - |
-| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | differentiated |
-| Resolution rate | - | - | - | 32.6% | 32.6% | - |
+| Metric | Before fixes | v6 | v7 | v8 | v9 | v10 | Target |
+|---|---|---|---|---|---|---|---|
+| callees_of(syncDataTypeSlice) | 0 | 14 | 13 (bare `sync`) | 14 (13 qualified + mutableListOf) | 14 | 15 (14 qualified + mutableListOf) | PASS |
+| callees_of(SleepSyncer.sync) | 1 | 18 | 15 | PASS | PASS | PASS (37 calls) | PASS |
+| callers_of(SleepSyncer.sync) | 0 | 0 | 0 | PASS (via qualified name) | PASS | PASS | PASS |
+| callers_of(DataExporter.export) | 0 | 3 | 0 external | 1 Kotlin caller | 1 Kotlin caller | PASS (1 ext + 11 int) | PASS |
+| tests_for(RecordedWorkoutSyncer) | 0 | WorkoutSyncerUtilsTest | PASS | PASS | PARTIAL | PARTIAL | PASS |
+| Communities | 0 | 11 | 11 | 11 | 11 | 11 | 10-50 |
+| Flows | ~100 | 3,224 | 3,226 | 3,059 | 3,059 | 4,060 | lifecycle entries |
+| TESTED_BY edges | 0 | 6,140 | 7,384 | - | 7,409 | 7,409 | - |
+| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | differentiated |
+| Resolution rate | - | - | - | 32.6% | 32.6% | **36.3%** | - |
+| Bare-name resolved | - | - | - | - | - | 5,625 | - |
 
-### Gadgetbridge scorecard: 9/10 PASS, 1 PARTIAL (v9)
+### Gadgetbridge scorecard: 7/8 PASS, 1 PARTIAL (v10)
 
 v8 was 10/10 but tests_for(RecordedWorkoutSyncer) is now scored more accurately as PARTIAL: the graph has WorkoutSyncerUtils->WorkoutSyncerUtilsTest TESTED_BY edges, but tests_for doesn't traverse CALLS chains transitively. RecordedWorkoutSyncer CALLS WorkoutSyncerUtils which IS tested.
 
-### HealthAgent v9 key gap: safe_request FP spot check
+### HealthAgent v10 key improvement: bare-name resolution
 
-`safe_request` on BaseConnector has 0 callers in the graph. Subclasses call it via `self.safe_request()`, which resolves to `self` (not BaseConnector). All connector `.sync()` methods also appear dead for the same reason. Fix: resolve `self.method()` against class hierarchy using INHERITS edges.
+Post-build `resolve_bare_call_targets()` resolved 2,294 previously-bare CALLS targets in HealthAgent by matching bare function names against the global node table and disambiguating via IMPORTS_FROM edges. This broke through the apparent tree-sitter ceiling at 28.6%, jumping to 45.6%. The remaining 54% are primarily stdlib/framework calls (LOG.info, Instant.ofEpochSecond, etc.) that have no local definition.
 
 ---
 
