@@ -303,6 +303,84 @@ class GraphStore:
         ).fetchall()
         return [self._row_to_edge(r) for r in rows]
 
+    def resolve_bare_call_targets(self) -> int:
+        """Batch-resolve bare-name CALLS targets using the global node table.
+
+        After parsing, some CALLS edges have bare targets (no ``::`` separator)
+        because the parser couldn't resolve cross-file.  This method matches
+        them against nodes and updates unambiguous matches in-place.
+
+        Disambiguation strategy:
+          1. Single node with that name -> resolve directly
+          2. Multiple candidates -> prefer one whose file is imported by the
+             source file (via IMPORTS_FROM edges)
+
+        Returns the number of resolved edges.
+        """
+        conn = self._conn
+
+        bare_edges = conn.execute(
+            "SELECT id, source_qualified, target_qualified, file_path "
+            "FROM edges WHERE kind = 'CALLS' AND target_qualified NOT LIKE '%::%'"
+        ).fetchall()
+        if not bare_edges:
+            return 0
+
+        # bare_name -> list of qualified_names
+        node_lookup: dict[str, list[str]] = {}
+        for row in conn.execute(
+            "SELECT name, qualified_name FROM nodes "
+            "WHERE kind IN ('Function', 'Test', 'Class')"
+        ).fetchall():
+            node_lookup.setdefault(row["name"], []).append(row["qualified_name"])
+
+        # source_file -> set of imported files (for disambiguation)
+        import_targets: dict[str, set[str]] = {}
+        for row in conn.execute(
+            "SELECT DISTINCT file_path, target_qualified FROM edges "
+            "WHERE kind = 'IMPORTS_FROM'"
+        ).fetchall():
+            target = row["target_qualified"]
+            target_file = target.split("::", 1)[0] if "::" in target else target
+            import_targets.setdefault(row["file_path"], set()).add(target_file)
+
+        resolved = 0
+        for edge in bare_edges:
+            bare_name = edge["target_qualified"]
+            candidates = node_lookup.get(bare_name, [])
+            if not candidates:
+                continue
+
+            if len(candidates) == 1:
+                qualified = candidates[0]
+            else:
+                # Disambiguate via imports
+                src_qn = edge["source_qualified"]
+                src_file = (
+                    src_qn.split("::", 1)[0] if "::" in src_qn
+                    else edge["file_path"]
+                )
+                imported_files = import_targets.get(src_file, set())
+                imported = [
+                    c for c in candidates
+                    if c.split("::", 1)[0] in imported_files
+                ]
+                if len(imported) == 1:
+                    qualified = imported[0]
+                else:
+                    continue
+
+            conn.execute(
+                "UPDATE edges SET target_qualified = ? WHERE id = ?",
+                (qualified, edge["id"]),
+            )
+            resolved += 1
+
+        if resolved:
+            conn.commit()
+            logger.info("Resolved %d bare-name CALLS targets", resolved)
+        return resolved
+
     def get_all_files(self) -> list[str]:
         rows = self._conn.execute(
             "SELECT DISTINCT file_path FROM nodes WHERE kind = 'File'"

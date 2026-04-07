@@ -714,9 +714,6 @@ class TestDeadCodeFalsePositives(_GraphTestBase):
             "Override of called parent method flagged as dead code"
         )
 
-    @pytest.mark.xfail(
-        reason="callers_of can't reverse-trace bare name 'sync' to SleepSyncer.sync"
-    )
     def test_bare_name_reverse_tracing(self):
         """When caller calls bare `sync`, and SleepSyncer.sync exists,
         callers_of(SleepSyncer.sync) should find the caller.
@@ -736,6 +733,10 @@ class TestDeadCodeFalsePositives(_GraphTestBase):
             path="/repo/manager.kt",
         )
 
+        # Post-build resolution qualifies bare targets
+        resolved = self.store.resolve_bare_call_targets()
+        assert resolved == 1
+
         # Query callers of the qualified name
         edges = self.store.get_edges_by_target(
             "/repo/syncer.kt::SleepSyncer.sync"
@@ -745,6 +746,62 @@ class TestDeadCodeFalsePositives(_GraphTestBase):
             "Bare-name CALLS edge to 'sync' should be findable when querying "
             "callers of SleepSyncer.sync"
         )
+
+    def test_bare_name_disambiguation_via_imports(self):
+        """When multiple nodes share a bare name, resolve via import edges."""
+        # Two files each have a 'sync' method
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="/repo/a.kt", file_path="/repo/a.kt",
+            line_start=1, line_end=50, language="kotlin",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="/repo/b.kt", file_path="/repo/b.kt",
+            line_start=1, line_end=50, language="kotlin",
+        ))
+        self._add_func("sync", path="/repo/a.kt", parent="ClassA", language="kotlin")
+        self._add_func("sync", path="/repo/b.kt", parent="ClassB", language="kotlin")
+        self._add_func("caller", path="/repo/caller.kt", language="kotlin")
+
+        # caller.kt imports from b.kt
+        self._add_edge(
+            "IMPORTS_FROM", "/repo/caller.kt", "/repo/b.kt::ClassB",
+            path="/repo/caller.kt",
+        )
+        # Bare call: caller() -> sync
+        self._add_edge(
+            "CALLS", "/repo/caller.kt::caller", "sync",
+            path="/repo/caller.kt",
+        )
+
+        resolved = self.store.resolve_bare_call_targets()
+        assert resolved == 1
+
+        # Should resolve to b.kt's sync (imported), not a.kt's
+        edges = self.store.get_edges_by_target("/repo/b.kt::ClassB.sync")
+        callers = [e for e in edges if e.kind == "CALLS"]
+        assert len(callers) == 1
+
+    def test_bare_name_ambiguous_left_unresolved(self):
+        """When multiple candidates exist and no imports disambiguate, skip."""
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="/repo/a.kt", file_path="/repo/a.kt",
+            line_start=1, line_end=50, language="kotlin",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="/repo/b.kt", file_path="/repo/b.kt",
+            line_start=1, line_end=50, language="kotlin",
+        ))
+        self._add_func("sync", path="/repo/a.kt", parent="ClassA", language="kotlin")
+        self._add_func("sync", path="/repo/b.kt", parent="ClassB", language="kotlin")
+        self._add_func("caller", path="/repo/caller.kt", language="kotlin")
+        # No imports -- ambiguous
+        self._add_edge(
+            "CALLS", "/repo/caller.kt::caller", "sync",
+            path="/repo/caller.kt",
+        )
+
+        resolved = self.store.resolve_bare_call_targets()
+        assert resolved == 0  # Left bare
 
     def test_exported_function_not_dead(self):
         """Functions that are imported by other files should not be dead.

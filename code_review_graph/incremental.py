@@ -415,6 +415,9 @@ def full_build(repo_root: Path, store: GraphStore) -> dict:
     # Post-parse Jedi enrichment for Python method calls
     jedi_stats = _run_jedi_enrichment(store, repo_root)
 
+    # Post-build: resolve bare-name CALLS targets across all files
+    bare_resolved = store.resolve_bare_call_targets()
+
     store.set_metadata("last_updated", time.strftime("%Y-%m-%dT%H:%M:%S"))
     store.set_metadata("last_build_type", "full")
     branch, sha = _git_branch_info(repo_root)
@@ -430,6 +433,7 @@ def full_build(repo_root: Path, store: GraphStore) -> dict:
         "total_edges": total_edges,
         "errors": errors,
         "jedi": jedi_stats,
+        "bare_resolved": bare_resolved,
     }
 
 
@@ -535,6 +539,9 @@ def incremental_update(
     # Post-parse Jedi enrichment for Python method calls
     jedi_stats = _run_jedi_enrichment(store, repo_root)
 
+    # Post-build: resolve bare-name CALLS targets across all files
+    bare_resolved = store.resolve_bare_call_targets()
+
     store.set_metadata("last_updated", time.strftime("%Y-%m-%dT%H:%M:%S"))
     store.set_metadata("last_build_type", "incremental")
     branch, sha = _git_branch_info(repo_root)
@@ -552,6 +559,7 @@ def incremental_update(
         "dependent_files": list(dependent_files),
         "errors": errors,
         "jedi": jedi_stats,
+        "bare_resolved": bare_resolved,
     }
 
 
