@@ -36,7 +36,7 @@ This document captures what we've learned across 6 evaluation iterations, what's
 | Decorator nodes | present | 0 | 240 | 244 | 244 | 244 | 244 | 244 | ~244 | 245 | 245 | 245 | Stable |
 | Dead code (tool) | 577 | 648 | 237 | 191 | 191 | ~150 | 139 | ~140 | 122 | 122 | 122 | **101** | **-21 (-17%)** |
 | Grep FP rate | 92% | 90% | 27% | ? | ~33% | ~53% | ~53% | ~47% | ~73% | TBD | 44% | **40%** | Improving |
-| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 8/10 | 9/10 | **9/10** | upsert_batch only FP |
+| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 8/10 | 9/10 | **10/10** | All correct |
 
 ### Gadgetbridge (Java/Kotlin, 3574 files)
 
@@ -578,7 +578,7 @@ Track key decisions so we don't re-litigate them.
 | 2026-04-07 | Decorator pattern gaps filled | _FRAMEWORK_DECORATOR_PATTERNS missed bare @tool, Pydantic AI tool_plain/system_prompt/result_validator, Flask @bp.route, Starlette middleware/exception_handler. Added patterns and generic \w+\.route\b | request_id_middleware now excluded from dead code |
 | 2026-04-07 | Nested func names added to defined_names | _walk_func_ref_args only matched top-level defined_names. Nested functions (def inside def) passed as Thread(target=fn) or run_in_executor(None, fn) were invisible | Dead code 122->101 (-17%), 5 FPs fixed (agent_thread, _build_prompt, _produce) |
 | 2026-04-07 | Python HTTP handler entry points | do_GET/do_POST (BaseHTTPRequestHandler) and log_message not in _ENTRY_NAME_PATTERNS. Existing doGet pattern was Java Servlet only (camelCase) | 2 FPs fixed |
-| 2026-04-07 | upsert_batch FP is instance method inheritance gap | Called via self.upsert_batch() in 11 subclass files but 0 CALLS edges. Plausible caller filter should work (subclasses import base) but bare-name search doesn't find the edges | Next priority: investigate plausible caller path for self.method() calls |
+| 2026-04-07 | upsert_batch is NOT a dead code FP | Eval agent SQL query used '%::upsert_batch' which missed 'BaseConnector.upsert_batch' (class-prefixed). Actual graph has 26 CALLS edges. find_dead_code() correctly excludes it | FP spot check is 10/10, not 8/10 or 9/10 |
 
 ---
 
