@@ -498,11 +498,11 @@ Each xfail represents a concrete improvement target. Flip it to pass = the fix w
 | ~~`test_java_import_creates_per_symbol_edge`~~ | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
 | ~~`test_kotlin_import_creates_per_symbol_edge`~~ | ~~Resolution~~ | ~~DONE (package-path fallback)~~ |
 | ~~`test_method_on_typed_variable_resolves`~~ | ~~Resolution~~ | ~~DONE (typed var enrichment `19d5e15`)~~ |
-| `test_bare_name_reverse_tracing` | Dead code | Cross-file graph-level resolution |
+| ~~`test_bare_name_reverse_tracing`~~ | ~~Dead code~~ | ~~DONE (post-build resolution `9038765`)~~ |
 | ~~`test_java_import_per_symbol`~~ (integration) | ~~Resolution~~ | ~~DONE (package-path fallback `a0ba7d2`)~~ |
 | ~~`test_kotlin_import_per_symbol`~~ (integration) | ~~Resolution~~ | ~~DONE (package-path fallback `a0ba7d2`)~~ |
 
-**8/9 resolved. 1 remaining xfail.**
+**9/9 resolved. 0 remaining xfails.**
 
 ---
 
