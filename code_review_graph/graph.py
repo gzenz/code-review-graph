@@ -294,6 +294,16 @@ class GraphStore:
         ).fetchall()
         return [self._row_to_node(r) for r in rows]
 
+    def get_all_nodes(self, exclude_files: bool = True) -> list[GraphNode]:
+        """Return all nodes, optionally excluding File nodes."""
+        if exclude_files:
+            rows = self._conn.execute(
+                "SELECT * FROM nodes WHERE kind != 'File'"
+            ).fetchall()
+        else:
+            rows = self._conn.execute("SELECT * FROM nodes").fetchall()
+        return [self._row_to_node(r) for r in rows]
+
     def get_edges_by_source(self, qualified_name: str) -> list[GraphEdge]:
         rows = self._conn.execute(
             "SELECT * FROM edges WHERE source_qualified = ?", (qualified_name,)

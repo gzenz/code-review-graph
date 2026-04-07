@@ -149,10 +149,37 @@ def _to_slug(s: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _build_adjacency(edges: list[GraphEdge]) -> dict[str, list[str]]:
+    """Build adjacency list from edges (one pass over all edges)."""
+    adj: dict[str, list[str]] = defaultdict(list)
+    for e in edges:
+        adj[e.source_qualified].append(e.target_qualified)
+        adj[e.target_qualified].append(e.source_qualified)
+    return adj
+
+
 def _compute_cohesion(
-    member_qns: set[str], all_edges: list[GraphEdge]
+    member_qns: set[str],
+    all_edges: list[GraphEdge],
+    adj: dict[str, list[str]] | None = None,
 ) -> float:
-    """Compute cohesion: internal_edges / (internal_edges + external_edges)."""
+    """Compute cohesion: internal_edges / (internal_edges + external_edges).
+
+    When *adj* is provided, uses O(community-edges) traversal instead of
+    scanning all edges.
+    """
+    if adj is not None:
+        internal = 0
+        external = 0
+        for qn in member_qns:
+            for neighbor in adj.get(qn, ()):
+                if neighbor in member_qns:
+                    internal += 1
+                else:
+                    external += 1
+        total = internal + external
+        return internal / total if total else 0.0
+
     internal = 0
     external = 0
     for e in all_edges:
@@ -175,7 +202,10 @@ def _compute_cohesion(
 
 
 def _detect_leiden(
-    nodes: list[GraphNode], edges: list[GraphEdge], min_size: int
+    nodes: list[GraphNode],
+    edges: list[GraphEdge],
+    min_size: int,
+    adj: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Detect communities using Leiden algorithm via igraph."""
     if ig is None:
@@ -208,8 +238,8 @@ def _detect_leiden(
                 weights.append(EDGE_WEIGHTS.get(e.kind, 0.5))
 
     if not edge_list:
-        # No edges — fall back to file grouping
-        return _detect_file_based(nodes, edges, min_size)
+        # No edges -- fall back to file grouping
+        return _detect_file_based(nodes, edges, min_size, adj=adj)
 
     g.add_edges(edge_list)
     g.es["weight"] = weights
@@ -235,7 +265,7 @@ def _detect_leiden(
         if len(members) < min_size:
             continue
         member_qns = {m.qualified_name for m in members}
-        cohesion = _compute_cohesion(member_qns, edges)
+        cohesion = _compute_cohesion(member_qns, edges, adj=adj)
         lang_counts = Counter(m.language for m in members if m.language)
         dominant_lang = lang_counts.most_common(1)[0][0] if lang_counts else ""
         name = _generate_community_name(members)
@@ -262,7 +292,10 @@ def _detect_leiden(
                 if e.source_qualified in comm["member_qns"]
                 and e.target_qualified in comm["member_qns"]
             ]
-            subs = _detect_leiden_sub(sub_nodes, sub_edges, min_size, parent_name=comm["name"])
+            subs = _detect_leiden_sub(
+                sub_nodes, sub_edges, min_size,
+                parent_name=comm["name"], adj=adj,
+            )
             if len(subs) >= 2:
                 final.extend(subs)
             else:
@@ -277,7 +310,7 @@ def _detect_leiden(
     # many unresolved bare-name call targets create disconnected components).
     max_communities = max(100, len(nodes) // 100)
     if not final or len(final) > max_communities:
-        return _detect_file_based(nodes, edges, min_size)
+        return _detect_file_based(nodes, edges, min_size, adj=adj)
 
     return final
 
@@ -287,6 +320,7 @@ def _detect_leiden_sub(
     edges: list[GraphEdge],
     min_size: int,
     parent_name: str,
+    adj: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Second-pass Leiden on a large community for sub-communities."""
     if ig is None:
@@ -325,14 +359,14 @@ def _detect_leiden_sub(
     )
 
     subs: list[dict[str, Any]] = []
-    for idx, cluster_ids in enumerate(partition):
+    for cluster_ids in partition:
         if len(cluster_ids) < min_size:
             continue
         members = [idx_to_node[i] for i in cluster_ids if i in idx_to_node]
         if len(members) < min_size:
             continue
         member_qns = {m.qualified_name for m in members}
-        cohesion = _compute_cohesion(member_qns, edges)
+        cohesion = _compute_cohesion(member_qns, edges, adj=adj)
         lang_counts = Counter(m.language for m in members if m.language)
         dominant_lang = lang_counts.most_common(1)[0][0] if lang_counts else ""
         name = _generate_community_name(members)
@@ -357,7 +391,10 @@ def _detect_leiden_sub(
 
 
 def _detect_file_based(
-    nodes: list[GraphNode], edges: list[GraphEdge], min_size: int
+    nodes: list[GraphNode],
+    edges: list[GraphEdge],
+    min_size: int,
+    adj: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Group nodes by directory when Leiden is unavailable or over-fragments.
 
@@ -411,7 +448,7 @@ def _detect_file_based(
         if len(members) < min_size:
             continue
         member_qns = {m.qualified_name for m in members}
-        cohesion = _compute_cohesion(member_qns, edges)
+        cohesion = _compute_cohesion(member_qns, edges, adj=adj)
         lang_counts = Counter(m.language for m in members if m.language)
         dominant_lang = lang_counts.most_common(1)[0][0] if lang_counts else ""
         name = _generate_community_name(members)
@@ -453,33 +490,17 @@ def detect_communities(
     """
     # Gather all nodes (exclude File nodes to focus on code entities)
     all_edges = store.get_all_edges()
-    all_files = store.get_all_files()
+    unique_nodes = store.get_all_nodes(exclude_files=True)
 
-    nodes: list[GraphNode] = []
-    for fp in all_files:
-        nodes.extend(store.get_nodes_by_file(fp))
-
-    # Also gather nodes from files referenced in edges but not in all_files
-    edge_files: set[str] = set()
-    for e in all_edges:
-        edge_files.add(e.file_path)
-    for fp in edge_files - set(all_files):
-        nodes.extend(store.get_nodes_by_file(fp))
-
-    # Deduplicate by qualified_name
-    seen_qns: set[str] = set()
-    unique_nodes: list[GraphNode] = []
-    for n in nodes:
-        if n.qualified_name not in seen_qns:
-            seen_qns.add(n.qualified_name)
-            unique_nodes.append(n)
+    # Build adjacency index once for fast cohesion computation
+    adj = _build_adjacency(all_edges)
 
     if IGRAPH_AVAILABLE:
         logger.info("Detecting communities with Leiden algorithm (igraph)")
-        results = _detect_leiden(unique_nodes, all_edges, min_size)
+        results = _detect_leiden(unique_nodes, all_edges, min_size, adj=adj)
     else:
         logger.info("igraph not available, using file-based community detection")
-        results = _detect_file_based(unique_nodes, all_edges, min_size)
+        results = _detect_file_based(unique_nodes, all_edges, min_size, adj=adj)
 
     # Convert member_qns (internal set) to a list for serialization safety,
     # then strip it from the returned dicts to avoid leaking internal state.

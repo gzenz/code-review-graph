@@ -1,6 +1,6 @@
 # code-review-graph: Strategic Analysis & Future Direction
 
-Last updated: 2026-04-07 (v15 -- handler migration, hardened tests, build perf analysis)
+Last updated: 2026-04-08 (v16 -- thread safety, build perf: batch storage, phase timing, community 21x speedup)
 
 ---
 
@@ -76,22 +76,31 @@ Last updated: 2026-04-07 (v15 -- handler migration, hardened tests, build perf a
 - `_import_map` rebuilt per-file but stored on the parser instance
 - Fine in practice (MCP tools are sequential) but not enforced
 
-### MEDIUM: Build performance -- postprocessing is single-threaded
+### ~~MEDIUM: Build performance~~ DONE (v16)
 
-Parsing uses `ProcessPoolExecutor` (up to 8 workers). But postprocessing (flows, communities, signatures, FTS, summaries) runs entirely on one core. Gadgetbridge (~3,500 files) takes 20+ minutes with most time in postprocessing.
+Gadgetbridge full build: **~72s -> ~23s** (3x faster overall).
 
-Bottlenecks:
-1. `store_file_nodes_edges()` -- SQLite single-writer, parsed results consumed serially
-2. `trace_flows()` -- serial graph traversal, could parallelize per entry point
-3. `detect_communities()` -- serial Leiden/file-based grouping
-4. `_compute_summaries()` -- serial SQL queries
+Phase timing (Gadgetbridge, 3,575 files, 41k nodes, 280k edges):
 
-Quick wins:
-- Batch SQLite inserts more aggressively (larger transactions, prepared statements)
-- Run flows + communities in parallel (both read-heavy, write only at end)
-- Add `--postprocess minimal` to CLI build command for fast iteration
-- Consider WAL mode checkpoint tuning
-- Add phase-level timing logs at DEBUG level (e.g. "Parsing: 45s, Flows: 120s, Communities: 30s")
+| Phase | v15 | v16 | Speedup |
+|---|---|---|---|
+| Parsing (parallel) | 15.3s | 11.5s | 1.3x (batch storage) |
+| Jedi enrichment | 0.3s | 0.4s | -- |
+| Bare-name resolution | 0.8s | 1.2s | -- |
+| Signatures | 0.3s | 0.3s | -- |
+| FTS rebuild | 0.9s | 0.5s | 2x |
+| Flows | 5.5s | 5.5s | -- |
+| **Communities** | **48.6s** | **2.3s** | **21x** |
+| Summaries | 0.8s | 1.4s | -- |
+
+Changes made:
+- Thread safety: `threading.Lock` on CodeParser caches (watch mode safe)
+- Batch file storage: 50 files/transaction via `store_file_batch()`
+- Batch risk_index: 2 GROUP BY queries replace ~70k per-node COUNT queries
+- Community detection: bulk `get_all_nodes()` (1 query vs 3,574), adjacency-indexed cohesion
+- Phase timing at INFO level in build and postprocess
+
+Remaining opportunity: `trace_flows()` at 5.5s is now the largest postprocess phase.
 
 ### MEDIUM: Remaining dead code FP sources (~40% grep FP rate)
 
@@ -107,8 +116,8 @@ Quick wins:
 | Issue | Severity | Status |
 |---|---|---|
 | VS Code extension | HIGH | OPEN |
-| Thread safety | MEDIUM | OPEN |
-| Build performance | MEDIUM | OPEN |
+| ~~Thread safety~~ | ~~MEDIUM~~ | **DONE** (v16) |
+| ~~Build performance~~ | ~~MEDIUM~~ | **DONE** (v16) -- 48.6s -> 2.3s communities, 3x overall |
 | Dead code FP rate (~40%) | MEDIUM | OPEN -- root causes identified |
 | scip-java for Java/Kotlin | LOW | DEPRIORITIZED -- ROI unclear vs 2-4 week effort |
 
