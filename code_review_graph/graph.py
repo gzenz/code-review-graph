@@ -249,6 +249,24 @@ class GraphStore:
             raise
         self._invalidate_cache()
 
+    def store_file_batch(
+        self, batch: list[tuple[str, list[NodeInfo], list[EdgeInfo], str]]
+    ) -> None:
+        """Atomically replace data for a batch of files in one transaction."""
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            for file_path, nodes, edges, fhash in batch:
+                self.remove_file_data(file_path)
+                for node in nodes:
+                    self.upsert_node(node, file_hash=fhash)
+                for edge in edges:
+                    self.upsert_edge(edge)
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+        self._invalidate_cache()
+
     def set_metadata(self, key: str, value: str) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", (key, value)

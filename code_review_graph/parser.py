@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple, Optional
@@ -243,6 +244,7 @@ class CodeParser:
         self._tsconfig_resolver = TsconfigResolver()
         self._handlers: dict[str, "BaseLanguageHandler"] = {}
         self._type_sets_cache: dict[str, tuple] = {}
+        self._lock = threading.Lock()
         self._register_handlers()
 
     def _register_handlers(self) -> None:
@@ -254,32 +256,40 @@ class CodeParser:
         cached = self._type_sets_cache.get(language)
         if cached is not None:
             return cached
-        handler = self._handlers.get(language)
-        if handler is not None:
-            result = (
-                set(handler.class_types),
-                set(handler.function_types),
-                set(handler.import_types),
-                set(handler.call_types),
-            )
-        else:
-            result = (
-                set(_CLASS_TYPES.get(language, [])),
-                set(_FUNCTION_TYPES.get(language, [])),
-                set(_IMPORT_TYPES.get(language, [])),
-                set(_CALL_TYPES.get(language, [])),
-            )
-        self._type_sets_cache[language] = result
-        return result
+        with self._lock:
+            cached = self._type_sets_cache.get(language)
+            if cached is not None:
+                return cached
+            handler = self._handlers.get(language)
+            if handler is not None:
+                result = (
+                    set(handler.class_types),
+                    set(handler.function_types),
+                    set(handler.import_types),
+                    set(handler.call_types),
+                )
+            else:
+                result = (
+                    set(_CLASS_TYPES.get(language, [])),
+                    set(_FUNCTION_TYPES.get(language, [])),
+                    set(_IMPORT_TYPES.get(language, [])),
+                    set(_CALL_TYPES.get(language, [])),
+                )
+            self._type_sets_cache[language] = result
+            return result
 
     def _get_parser(self, language: str):  # type: ignore[arg-type]
-        if language not in self._parsers:
+        if language in self._parsers:
+            return self._parsers[language]
+        with self._lock:
+            if language in self._parsers:
+                return self._parsers[language]
             try:
                 self._parsers[language] = tslp.get_parser(language)  # type: ignore[arg-type]
             except Exception:
                 logger.warning("Failed to load tree-sitter parser for %s", language)
                 return None
-        return self._parsers[language]
+            return self._parsers[language]
 
     def detect_language(self, path: Path) -> Optional[str]:
         return EXTENSION_TO_LANGUAGE.get(path.suffix.lower())
@@ -2589,7 +2599,10 @@ class CodeParser:
         language: str,
         _resolving: frozenset[str] = frozenset(),
     ) -> set[str]:
-        """Return the public names exported by a module file."""
+        """Return the public names exported by a module file.
+
+        Double-check locking: check cache, do I/O outside lock, store under lock.
+        """
         if resolved_path in self._star_export_cache:
             return self._star_export_cache[resolved_path]
         try:
@@ -2600,17 +2613,17 @@ class CodeParser:
         if not parser:
             return set()
         tree = parser.parse(source)  # type: ignore[union-attr]
-        # Respect __all__ if defined
         all_names = self._extract_dunder_all(tree.root_node)
         if all_names is not None:
-            self._star_export_cache[resolved_path] = all_names
+            with self._lock:
+                self._star_export_cache[resolved_path] = all_names
             return all_names
-        # Fall back to public top-level names
         _, defined_names = self._collect_file_scope(
             tree.root_node, language, source,
         )
         result = {n for n in defined_names if not n.startswith("_")}
-        self._star_export_cache[resolved_path] = result
+        with self._lock:
+            self._star_export_cache[resolved_path] = result
         return result
 
     @staticmethod
@@ -2764,6 +2777,7 @@ class CodeParser:
         """Resolve a module/import path to an absolute file path.
 
         Uses self._module_file_cache to avoid repeated filesystem lookups.
+        Double-check locking: check cache, resolve outside lock, store under lock.
         """
         caller_dir = str(Path(file_path).parent)
         cache_key = f"{language}:{caller_dir}:{module}"
@@ -2771,12 +2785,14 @@ class CodeParser:
             return self._module_file_cache[cache_key]
 
         resolved = self._do_resolve_module(module, file_path, language)
-        if len(self._module_file_cache) >= self._MODULE_CACHE_MAX:
-            # Evict oldest half instead of clearing everything
-            keys = list(self._module_file_cache)
-            for k in keys[: len(keys) // 2]:
-                del self._module_file_cache[k]
-        self._module_file_cache[cache_key] = resolved
+        with self._lock:
+            if cache_key in self._module_file_cache:
+                return self._module_file_cache[cache_key]
+            if len(self._module_file_cache) >= self._MODULE_CACHE_MAX:
+                keys = list(self._module_file_cache)
+                for k in keys[: len(keys) // 2]:
+                    del self._module_file_cache[k]
+            self._module_file_cache[cache_key] = resolved
         return resolved
 
     def _do_resolve_module(

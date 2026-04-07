@@ -301,6 +301,31 @@ class TestCodeParser:
         parser._resolve_module_to_file("os", "/test/file.py", "python")
         assert len(parser._module_file_cache) <= parser._MODULE_CACHE_MAX
 
+    def test_parser_thread_safety(self):
+        """CodeParser caches should be safe under concurrent access."""
+        import threading
+        from pathlib import Path as P
+
+        parser = CodeParser()
+        source = b'def hello():\n    pass\n\ndef world():\n    hello()\n'
+        errors: list[Exception] = []
+
+        def worker():
+            try:
+                for _ in range(20):
+                    nodes, edges = parser.parse_bytes(P("/t/f.py"), source)
+                    assert any(n.name == "hello" for n in nodes)
+                    assert any(n.name == "world" for n in nodes)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors, f"Thread safety errors: {errors}"
+
     # --- Vue SFC tests ---
 
     def test_detect_language_vue(self):
