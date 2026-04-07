@@ -1536,3 +1536,52 @@ class TestDecoratorPatternGaps(_GraphTestBase):
         self._add_func("not_found", extra={"decorators": ["app.exception_handler(404)"]})
         dead_names = {d["name"] for d in find_dead_code(self.store)}
         assert "not_found" not in dead_names
+
+
+# ===================================================================
+# 11. NESTED FUNCTION REFERENCES AS ARGUMENTS
+# ===================================================================
+
+
+class TestNestedFuncRefArgs:
+    """Pain point: nested functions passed as arguments don't get CALLS edges.
+
+    _walk_func_ref_args checks identifiers against defined_names, which only
+    contains top-level file scope names. Nested functions (def inside def)
+    are not in defined_names, so Thread(target=nested_fn) produces no edge.
+    This is the #1 source of dead code false positives in HealthAgent.
+    """
+
+    def setup_method(self):
+        self.parser = CodeParser()
+
+    def test_nested_func_thread_target(self):
+        """Thread(target=nested_fn) should emit CALLS to nested_fn."""
+        _, edges = self.parser.parse_bytes(
+            Path("/test.py"),
+            b"def outer():\n"
+            b"    def worker():\n"
+            b"        pass\n"
+            b"    import threading\n"
+            b"    t = threading.Thread(target=worker)\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = [e.target for e in calls]
+        assert any("worker" in t for t in targets), (
+            f"Expected CALLS to worker, got: {targets}"
+        )
+
+    def test_nested_func_run_in_executor(self):
+        """run_in_executor(None, nested_fn) should emit CALLS to nested_fn."""
+        _, edges = self.parser.parse_bytes(
+            Path("/test.py"),
+            b"async def outer():\n"
+            b"    def _build():\n"
+            b"        pass\n"
+            b"    await loop.run_in_executor(None, _build)\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = [e.target for e in calls]
+        assert any("_build" in t for t in targets), (
+            f"Expected CALLS to _build, got: {targets}"
+        )

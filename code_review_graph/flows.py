@@ -89,6 +89,9 @@ _ENTRY_NAME_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"^on(Create|Start|Resume|Pause|Stop|Destroy|Bind|Receive)"),
     # Servlet / JAX-RS
     re.compile(r"^do(Get|Post|Put|Delete)$"),
+    # Python BaseHTTPRequestHandler
+    re.compile(r"^do_(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)$"),
+    re.compile(r"^log_message$"),
     # Express middleware signature
     re.compile(r"^(middleware|errorHandler)$"),
     # Angular lifecycle hooks

@@ -1023,6 +1023,10 @@ class CodeParser:
             if child.type in func_types:
                 fname = self._get_name(child, language, "function")
                 if fname:
+                    # Add nested function name so sibling/parent scopes can
+                    # match it when it appears as an argument reference
+                    # (e.g. Thread(target=nested_fn)).
+                    defined_names.add(fname)
                     self._walk_func_ref_args(
                         child, language, file_path, edges, defined_names,
                         arg_list_types, ident_types, kw_types,
