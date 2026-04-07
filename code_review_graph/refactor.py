@@ -283,6 +283,10 @@ def find_dead_code(
         for imp_target in importer_files.get(edge_file, ()):
             if imp_target.startswith(node_file):
                 return True
+            # 2-hop: edge_file imports X, X re-exports from node_file (barrel files)
+            for imp2 in importer_files.get(imp_target, ()):
+                if imp2.startswith(node_file):
+                    return True
         return False
 
     dead: list[dict[str, Any]] = []

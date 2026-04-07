@@ -871,3 +871,74 @@ class PlainClass:
         )
         imports = [e for e in edges if e.kind == "IMPORTS_FROM"]
         assert len(imports) >= 1, "Expected IMPORTS_FROM for export * re-export"
+
+    def test_angular_template_event_binding(self):
+        """(click)="method()" should create a CALLS edge."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/app/my.component.html"),
+            b'<button (click)="openSettings()">Go</button>\n',
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert "openSettings" in targets
+
+    def test_angular_template_interpolation(self):
+        """{{method()}} should create a CALLS edge."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/app/filter.component.html"),
+            b"<p>{{getRuleSummary()}}</p>\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert "getRuleSummary" in targets
+
+    def test_angular_template_property_binding(self):
+        """[value]="property" should create a CALLS edge."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/app/comp.component.html"),
+            b'<input [value]="selectedClassification">\n',
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert "selectedClassification" in targets
+
+    def test_angular_template_non_component_html_ignored(self):
+        """Non-component .html files should be skipped."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/app/index.html"),
+            b'<button (click)="openSettings()">Go</button>\n',
+        )
+        assert len(nodes) == 0
+        assert len(edges) == 0
+
+    def test_angular_template_control_flow(self):
+        """@if (condition) should create a CALLS edge for the condition."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/app/page.component.html"),
+            b'@if (shouldShow) {\n  <div>Content</div>\n}\n',
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert "shouldShow" in targets
+
+    def test_func_ref_return_statement(self):
+        """return funcName should create a CALLS edge for the reference."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/repo/counter.ts"),
+            b"function countTokensGpt(text: string): number { return text.length; }\n"
+            b"function getCounter() { return countTokensGpt; }\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert any("countTokensGpt" in t for t in targets)
+
+    def test_func_ref_assignment(self):
+        """const x = funcName should create a CALLS edge for the reference."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/repo/handler.ts"),
+            b"function processEvent() { return 1; }\n"
+            b"const handler = processEvent;\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert any("processEvent" in t for t in targets)

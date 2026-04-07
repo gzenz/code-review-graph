@@ -105,6 +105,7 @@ EXTENSION_TO_LANGUAGE: dict[str, str] = {
     ".xs": "c",  # Perl XS: parsed as C to capture functions/structs/includes
     ".lua": "lua",
     ".ipynb": "notebook",
+    ".html": "html",
 }
 
 # Tree-sitter node type mappings per language
@@ -293,6 +294,10 @@ class CodeParser:
         if not language:
             return [], []
 
+        # Angular templates: regex-based extraction (no tree-sitter grammar)
+        if language == "html":
+            return self._parse_angular_template(path, source)
+
         # Vue SFCs: parse with vue parser, then delegate script blocks to JS/TS
         if language == "vue":
             return self._parse_vue(path, source)
@@ -352,6 +357,11 @@ class CodeParser:
 
         # Enrich: detect function/class references passed as call arguments
         self._enrich_func_ref_args(
+            tree.root_node, language, file_path_str, edges, defined_names,
+        )
+
+        # Enrich: detect function references in return statements and assignments
+        self._enrich_func_ref_returns(
             tree.root_node, language, file_path_str, edges, defined_names,
         )
 
@@ -460,6 +470,116 @@ class CodeParser:
             self._generate_tested_by(all_nodes, all_edges)
 
         return all_nodes, all_edges
+
+    # Regex patterns for Angular template reference extraction
+    _ANGULAR_EVENT_RE = re.compile(r'\([\w.]+\)="(\w+)\(')
+    _ANGULAR_INTERP_CALL_RE = re.compile(r'\{\{[^}]*?(\w+)\(')
+    _ANGULAR_BINDING_CALL_RE = re.compile(r'\[[\w.]+\]="[^"]*?(\w+)\(')
+    _ANGULAR_BINDING_PROP_RE = re.compile(r'\[[\w.]+\]="(\w+)"')
+    _ANGULAR_CONTROL_RE = re.compile(r'@(?:if|for|switch)\s*\(([^)]+)\)')
+    _ANGULAR_TEMPLATE_KEYWORDS = frozenset({
+        "true", "false", "null", "undefined", "let", "of", "as", "track",
+        "index", "first", "last", "even", "odd", "count", "i", "item",
+        "event", "$event", "this", "else", "then", "empty",
+    })
+
+    def _parse_angular_template(
+        self, path: Path, source: bytes,
+    ) -> tuple[list[NodeInfo], list[EdgeInfo]]:
+        """Parse an Angular template (.component.html) using regex.
+
+        Extracts method and property references from Angular template syntax:
+        - Event bindings: ``(click)="method()"``
+        - Interpolation: ``{{method()}}``
+        - Property bindings: ``[prop]="method()"`` or ``[prop]="property"``
+        - Control flow: ``@if (condition)``
+        """
+        file_path_str = str(path)
+        # Only parse Angular component templates
+        if not file_path_str.endswith(".component.html"):
+            return [], []
+
+        text = source.decode("utf-8", errors="replace")
+        nodes: list[NodeInfo] = [NodeInfo(
+            kind="File",
+            name=file_path_str,
+            file_path=file_path_str,
+            line_start=1,
+            line_end=text.count("\n") + 1,
+            language="html",
+            is_test=False,
+        )]
+        edges: list[EdgeInfo] = []
+        seen: set[str] = set()
+
+        # Extract method/property references
+        for pattern in (
+            self._ANGULAR_EVENT_RE,
+            self._ANGULAR_INTERP_CALL_RE,
+            self._ANGULAR_BINDING_CALL_RE,
+            self._ANGULAR_BINDING_PROP_RE,
+        ):
+            for m in pattern.finditer(text):
+                name = m.group(1)
+                if name in self._ANGULAR_TEMPLATE_KEYWORDS:
+                    continue
+                if name in seen:
+                    continue
+                seen.add(name)
+                line = text[:m.start()].count("\n") + 1
+                edges.append(EdgeInfo(
+                    kind="CALLS",
+                    source=file_path_str,
+                    target=name,
+                    file_path=file_path_str,
+                    line=line,
+                ))
+
+        # Extract identifiers from @if/@for/@switch control flow
+        for m in self._ANGULAR_CONTROL_RE.finditer(text):
+            expr = m.group(1)
+            # Extract method calls from control flow expressions
+            for call_m in re.finditer(r'(\w+)\(', expr):
+                name = call_m.group(1)
+                if name in self._ANGULAR_TEMPLATE_KEYWORDS or name in seen:
+                    continue
+                seen.add(name)
+                line = text[:m.start()].count("\n") + 1
+                edges.append(EdgeInfo(
+                    kind="CALLS",
+                    source=file_path_str,
+                    target=name,
+                    file_path=file_path_str,
+                    line=line,
+                ))
+            # Extract standalone identifiers (properties)
+            for ident_m in re.finditer(r'\b([a-zA-Z_]\w+)\b', expr):
+                name = ident_m.group(1)
+                if (name in self._ANGULAR_TEMPLATE_KEYWORDS or name in seen
+                        or name[0].isupper()):
+                    continue
+                seen.add(name)
+                line = text[:m.start()].count("\n") + 1
+                edges.append(EdgeInfo(
+                    kind="CALLS",
+                    source=file_path_str,
+                    target=name,
+                    file_path=file_path_str,
+                    line=line,
+                ))
+
+        # Add IMPORTS_FROM edge to companion .component.ts if it exists
+        companion_ts = Path(file_path_str.replace(".component.html", ".component.ts"))
+        if companion_ts.exists():
+            edges.append(EdgeInfo(
+                kind="IMPORTS_FROM",
+                source=file_path_str,
+                target=str(companion_ts),
+                file_path=file_path_str,
+                line=1,
+            ))
+
+        return nodes, edges
 
     def _parse_notebook(
         self, path: Path, source: bytes,
@@ -942,6 +1062,133 @@ class CodeParser:
             self._walk_func_ref_args(
                 child, language, file_path, edges, defined_names,
                 arg_list_types, ident_types, kw_types,
+                enclosing_func=enclosing_func,
+                enclosing_class=enclosing_class,
+                _depth=_depth + 1,
+            )
+
+    # ------------------------------------------------------------------
+    # Function-reference in return/assignment enrichment
+    # ------------------------------------------------------------------
+
+    def _enrich_func_ref_returns(
+        self,
+        root,
+        language: str,
+        file_path: str,
+        edges: list[EdgeInfo],
+        defined_names: set[str],
+    ) -> None:
+        """Detect function/class names used as values in return and assignment.
+
+        Patterns like ``return countTokensGpt`` or ``callback = myHandler``
+        reference a function by name without calling it.  Emit CALLS edges
+        so these references prevent the target from being flagged as dead code.
+        """
+        if not defined_names:
+            return
+        ident_types = {"identifier", "simple_identifier"}
+        return_types = {"return_statement"}
+        assign_types = {
+            "assignment", "variable_declarator",
+            "assignment_expression", "augmented_assignment",
+        }
+        self._walk_func_ref_returns(
+            root, language, file_path, edges, defined_names,
+            ident_types, return_types, assign_types,
+            enclosing_func=None, enclosing_class=None,
+        )
+
+    def _walk_func_ref_returns(
+        self,
+        node,
+        language: str,
+        file_path: str,
+        edges: list[EdgeInfo],
+        defined_names: set[str],
+        ident_types: set[str],
+        return_types: set[str],
+        assign_types: set[str],
+        enclosing_func: Optional[str],
+        enclosing_class: Optional[str],
+        _depth: int = 0,
+    ) -> None:
+        if _depth > 50:
+            return
+        _, func_types, _, _ = self._type_sets(language)
+
+        for child in node.children:
+            # Track enclosing function scope
+            if child.type in func_types:
+                fname = self._get_name(child, language, "function")
+                if fname:
+                    self._walk_func_ref_returns(
+                        child, language, file_path, edges, defined_names,
+                        ident_types, return_types, assign_types,
+                        enclosing_func=fname, enclosing_class=enclosing_class,
+                        _depth=_depth + 1,
+                    )
+                    continue
+
+            # Return statement: ``return funcName``
+            if child.type in return_types:
+                for sub in child.children:
+                    if sub.type in ident_types:
+                        ref_name = sub.text.decode("utf-8", errors="replace")
+                        if ref_name in defined_names:
+                            source = (
+                                self._qualify(
+                                    enclosing_func, file_path, enclosing_class,
+                                )
+                                if enclosing_func else file_path
+                            )
+                            edges.append(EdgeInfo(
+                                kind="CALLS",
+                                source=source,
+                                target=ref_name,
+                                file_path=file_path,
+                                line=sub.start_point[0] + 1,
+                            ))
+                continue
+
+            # Assignment: ``const callback = funcName`` / ``x = funcName``
+            if child.type in assign_types:
+                # Find the rightmost identifier child that is a defined name.
+                # In ``const x = funcName``, the value is the last identifier.
+                last_ident = None
+                for sub in child.children:
+                    if sub.type in ident_types:
+                        last_ident = sub
+                if last_ident:
+                    ref_name = last_ident.text.decode("utf-8", errors="replace")
+                    if ref_name in defined_names:
+                        # Avoid self-reference: skip if the name equals the
+                        # variable being assigned (e.g. ``const x = x``).
+                        first_ident = None
+                        for sub in child.children:
+                            if sub.type in ident_types:
+                                first_ident = sub
+                                break
+                        if first_ident and first_ident != last_ident:
+                            source = (
+                                self._qualify(
+                                    enclosing_func, file_path, enclosing_class,
+                                )
+                                if enclosing_func else file_path
+                            )
+                            edges.append(EdgeInfo(
+                                kind="CALLS",
+                                source=source,
+                                target=ref_name,
+                                file_path=file_path,
+                                line=last_ident.start_point[0] + 1,
+                            ))
+                continue
+
+            # Recurse into other children
+            self._walk_func_ref_returns(
+                child, language, file_path, edges, defined_names,
+                ident_types, return_types, assign_types,
                 enclosing_func=enclosing_func,
                 enclosing_class=enclosing_class,
                 _depth=_depth + 1,

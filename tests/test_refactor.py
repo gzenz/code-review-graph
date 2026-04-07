@@ -608,3 +608,45 @@ class TestPendingRefactorsThreadSafe:
             assert len(_pending_refactors) >= 10
             # Clean up
             _pending_refactors.clear()
+
+
+class TestTransitiveImportResolution:
+    """Tests for 2-hop transitive import resolution in plausible caller."""
+
+    def setup_method(self):
+        self.store = GraphStore(":memory:")
+        for f in ("/repo/consumer.ts", "/repo/lib/index.ts", "/repo/lib/utils.ts"):
+            self.store.upsert_node(NodeInfo(
+                kind="File", name=f, file_path=f,
+                line_start=1, line_end=50, language="typescript",
+            ))
+
+    def test_transitive_import_via_barrel_file(self):
+        """consumer.ts imports index.ts which re-exports from utils.ts.
+        A bare-name CALLS from consumer.ts should be plausible for utils.ts functions."""
+        # Function defined in utils.ts
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="safeJsonParse",
+            file_path="/repo/lib/utils.ts",
+            line_start=10, line_end=20, language="typescript",
+        ))
+        # Import chain: consumer -> index -> utils
+        self.store.upsert_edge(EdgeInfo(
+            kind="IMPORTS_FROM", source="/repo/consumer.ts",
+            target="/repo/lib/index.ts", file_path="/repo/consumer.ts", line=1,
+        ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="IMPORTS_FROM", source="/repo/lib/index.ts",
+            target="/repo/lib/utils.ts", file_path="/repo/lib/index.ts", line=1,
+        ))
+        # Bare-name CALLS from consumer
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="/repo/consumer.ts::processData",
+            target="safeJsonParse", file_path="/repo/consumer.ts", line=5,
+        ))
+        self.store.commit()
+        dead = find_dead_code(self.store)
+        dead_names = {d["name"] for d in dead}
+        assert "safeJsonParse" not in dead_names, (
+            "2-hop import chain should make consumer a plausible caller"
+        )
