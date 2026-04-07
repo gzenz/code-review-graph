@@ -1517,6 +1517,16 @@ class CodeParser:
                 )
                 continue
 
+            # --- JS/TS re-exports: export { X } from './mod', export * from './mod' ---
+            if (
+                language in ("javascript", "typescript", "tsx")
+                and node_type == "export_statement"
+            ):
+                self._extract_js_reexport_edges(
+                    child, language, file_path, edges,
+                )
+                # Don't continue -- export_statement may also contain definitions
+
             # --- Calls ---
             if node_type in call_types:
                 if self._extract_calls(
@@ -2291,6 +2301,51 @@ class CodeParser:
                         line=child.start_point[0] + 1,
                     ))
 
+    def _extract_js_reexport_edges(
+        self,
+        node,
+        language: str,
+        file_path: str,
+        edges: list[EdgeInfo],
+    ) -> None:
+        """Emit IMPORTS_FROM edges for JS/TS re-exports with ``from`` clause."""
+        # Must have a 'from' string
+        module = None
+        for child in node.children:
+            if child.type == "string":
+                module = child.text.decode("utf-8", errors="replace").strip("'\"")
+        if not module:
+            return
+        resolved = self._resolve_module_to_file(module, file_path, language)
+        target = resolved if resolved else module
+        # File-level IMPORTS_FROM
+        edges.append(EdgeInfo(
+            kind="IMPORTS_FROM",
+            source=file_path,
+            target=target,
+            file_path=file_path,
+            line=node.start_point[0] + 1,
+        ))
+        # Per-symbol edges for named re-exports
+        if resolved:
+            for child in node.children:
+                if child.type == "export_clause":
+                    for spec in child.children:
+                        if spec.type == "export_specifier":
+                            names = [
+                                s.text.decode("utf-8", errors="replace")
+                                for s in spec.children
+                                if s.type == "identifier"
+                            ]
+                            if names:
+                                edges.append(EdgeInfo(
+                                    kind="IMPORTS_FROM",
+                                    source=file_path,
+                                    target=f"{resolved}::{names[0]}",
+                                    file_path=file_path,
+                                    line=node.start_point[0] + 1,
+                                ))
+
     @staticmethod
     def _get_js_import_names(node) -> list[str]:
         """Extract imported symbol names from a JS/TS import statement.
@@ -2424,6 +2479,7 @@ class CodeParser:
         """
         call_name = self._get_call_name(
             child, language, source, is_test_file=_is_test_file(file_path),
+            import_map=import_map,
         )
 
         # Skip calls to language builtins (len, print, etc.)
@@ -2783,6 +2839,20 @@ class CodeParser:
             if node_type in import_types:
                 self._collect_import_names(child, language, source, import_map)
 
+            # JS/TS: const X = require('mod') or const { X } = require('mod')
+            if (
+                language in ("javascript", "typescript", "tsx")
+                and node_type in ("lexical_declaration", "variable_declaration")
+            ):
+                self._collect_js_require(child, import_map)
+
+            # JS/TS: export { X } from './mod' or export * from './mod'
+            if (
+                language in ("javascript", "typescript", "tsx")
+                and node_type == "export_statement"
+            ):
+                self._collect_js_reexport(child, import_map)
+
         return import_map, defined_names
 
     # -- Star import resolution --
@@ -2901,11 +2971,16 @@ class CodeParser:
     def _collect_js_import_names(
         self, clause_node, module: str, import_map: dict[str, str],
     ) -> None:
-        """Walk JS/TS import_clause to extract named and default imports."""
+        """Walk JS/TS import_clause to extract named, default, and namespace imports."""
         for child in clause_node.children:
             if child.type == "identifier":
                 # Default import
                 import_map[child.text.decode("utf-8", errors="replace")] = module
+            elif child.type == "namespace_import":
+                # import * as X from './mod' -> X maps to module
+                for sub in child.children:
+                    if sub.type == "identifier":
+                        import_map[sub.text.decode("utf-8", errors="replace")] = module
             elif child.type == "named_imports":
                 for spec in child.children:
                     if spec.type == "import_specifier":
@@ -2918,6 +2993,79 @@ class CodeParser:
                         # Last identifier is the local name
                         if names:
                             import_map[names[-1]] = module
+
+    def _collect_js_require(
+        self, decl_node, import_map: dict[str, str],
+    ) -> None:
+        """Extract require() calls: ``const X = require('mod')``."""
+        for child in decl_node.children:
+            if child.type != "variable_declarator":
+                continue
+            # Need: lhs = require('mod')
+            lhs = None
+            call = None
+            for sub in child.children:
+                if sub.type in ("identifier", "object_pattern"):
+                    lhs = sub
+                elif sub.type == "call_expression":
+                    call = sub
+            if lhs is None or call is None:
+                continue
+            # Verify it's require(...)
+            callee = call.child_by_field_name("function")
+            if callee is None:
+                callee = call.children[0] if call.children else None
+            if callee is None or callee.type != "identifier":
+                continue
+            if callee.text.decode("utf-8", errors="replace") != "require":
+                continue
+            # Extract module string
+            module = None
+            args = call.child_by_field_name("arguments")
+            if args is None:
+                for c in call.children:
+                    if c.type == "arguments":
+                        args = c
+                        break
+            if args:
+                for c in args.children:
+                    if c.type == "string":
+                        module = c.text.decode("utf-8", errors="replace").strip("'\"")
+                        break
+            if not module:
+                continue
+            # Map lhs to module
+            if lhs.type == "identifier":
+                import_map[lhs.text.decode("utf-8", errors="replace")] = module
+            elif lhs.type == "object_pattern":
+                for prop in lhs.children:
+                    if prop.type == "shorthand_property_identifier_pattern":
+                        name = prop.text.decode("utf-8", errors="replace")
+                        import_map[name] = module
+
+    def _collect_js_reexport(
+        self, export_node, import_map: dict[str, str],
+    ) -> None:
+        """Extract re-exports: ``export { X } from './mod'`` and ``export * from './mod'``."""
+        # Find the 'from' source module
+        module = None
+        for child in export_node.children:
+            if child.type == "string":
+                module = child.text.decode("utf-8", errors="replace").strip("'\"")
+        if not module:
+            return
+        # Named re-exports: export { X, Y } from './mod'
+        for child in export_node.children:
+            if child.type == "export_clause":
+                for spec in child.children:
+                    if spec.type == "export_specifier":
+                        names = [
+                            s.text.decode("utf-8", errors="replace")
+                            for s in spec.children
+                            if s.type == "identifier"
+                        ]
+                        if names:
+                            import_map[names[0]] = module
 
     def _resolve_module_to_file(
         self, module: str, file_path: str, language: str,
@@ -3119,6 +3267,7 @@ class CodeParser:
 
     def _get_call_name(
         self, node, language: str, source: bytes, is_test_file: bool = False,
+        import_map: dict[str, str] | None = None,
     ) -> Optional[str]:
         """Extract the function/method name being called."""
         if not node.children:
@@ -3226,7 +3375,13 @@ class CodeParser:
                     receiver.type in ("identifier", "simple_identifier")
                     and receiver_text[:1].isupper()
                 )
-                if not is_self_call and not is_class_call:
+                # Namespace import receivers (import * as X) -- allow through
+                is_ns_import = (
+                    import_map is not None
+                    and receiver.type in ("identifier", "simple_identifier")
+                    and receiver_text in import_map
+                )
+                if not is_self_call and not is_class_call and not is_ns_import:
                     return None
 
             # Get the rightmost identifier (the method name)
@@ -3237,7 +3392,9 @@ class CodeParser:
             receiver_prefix = ""
             if receiver and receiver.type in ("identifier", "simple_identifier"):
                 rtxt = receiver.text.decode("utf-8", errors="replace")
-                if rtxt[:1].isupper():
+                if rtxt[:1].isupper() or (
+                    import_map is not None and rtxt in import_map
+                ):
                     receiver_prefix = rtxt + "."
             for child in reversed(first.children):
                 if child.type in (

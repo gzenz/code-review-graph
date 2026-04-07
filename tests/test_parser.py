@@ -760,3 +760,79 @@ class PlainClass:
         calls = [e for e in edges if e.kind == "CALLS"]
         targets = {c.target for c in calls}
         assert "fetch_data" not in targets
+
+    # --- JS/TS namespace imports, require(), re-exports ---
+
+    def test_namespace_import_populates_import_map(self):
+        """import * as X from './mod' should let X.fn() resolve."""
+        nodes, edges = self.parser.parse_file(FIXTURES / "js_namespace_import.ts")
+        calls = [e for e in edges if e.kind == "CALLS"]
+        # utils.cn() should produce a dotted call name
+        call_targets = {c.target for c in calls}
+        assert any("cn" in t for t in call_targets), (
+            f"Expected utils.cn() to resolve, got: {call_targets}"
+        )
+        # Should have IMPORTS_FROM for the namespace
+        imports = [e for e in edges if e.kind == "IMPORTS_FROM"]
+        assert len(imports) >= 1
+
+    def test_namespace_import_resolves_in_prod_code(self):
+        """import * as X from './mod' in production code should resolve X.fn()."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/project/src/app.ts"),
+            b"import * as helpers from './helpers';\n"
+            b"function main() { helpers.format('x'); }\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {c.target for c in calls}
+        # Should resolve via import_map to module::method format
+        assert any("format" in t and t != "format" for t in targets), (
+            f"Expected resolved helpers.format() call in prod code, got: {targets}"
+        )
+
+    def test_commonjs_require_default(self):
+        """const X = require('mod') should populate import_map."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/project/app.js"),
+            b"const path = require('path');\n"
+            b"function main() { path.resolve('.'); }\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {c.target for c in calls}
+        # path.resolve should produce a call edge (path in import_map)
+        assert any("resolve" in t for t in targets), (
+            f"Expected path.resolve() call, got: {targets}"
+        )
+
+    def test_commonjs_require_destructured(self):
+        """const { X } = require('mod') should populate import_map."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/project/app.js"),
+            b"const { readFile } = require('fs');\n"
+            b"function main() { readFile('x'); }\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {c.target for c in calls}
+        assert any("readFile" in t for t in targets), (
+            f"Expected readFile() call, got: {targets}"
+        )
+
+    def test_js_reexport_named(self):
+        """export { X } from './mod' should create IMPORTS_FROM edge."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/project/index.ts"),
+            b"export { foo, bar } from './utils';\n",
+        )
+        imports = [e for e in edges if e.kind == "IMPORTS_FROM"]
+        assert len(imports) >= 1, (
+            f"Expected IMPORTS_FROM for named re-export, got: {[e.target for e in imports]}"
+        )
+
+    def test_js_reexport_star(self):
+        """export * from './mod' should create IMPORTS_FROM edge."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/project/index.ts"),
+            b"export * from './other';\n",
+        )
+        imports = [e for e in edges if e.kind == "IMPORTS_FROM"]
+        assert len(imports) >= 1, "Expected IMPORTS_FROM for export * re-export"

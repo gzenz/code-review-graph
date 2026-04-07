@@ -282,10 +282,17 @@ The strategic recommendation is **Option B (Hybrid)** implemented incrementally:
 - Expected impact: Java/Kotlin resolution from ~10% to ~70%
 - Dependency: `protobuf` Python library for SCIP consumption (lightweight)
 
-### Phase 3: TypeScript enrichment via TS Compiler API (4-6 weeks)
+### Phase 3a: TS/JS tree-sitter quick wins (Priority I, Tier 1)
+- **Namespace imports**: `import * as utils from './utils'` -- add `namespace_import` handling to `_collect_js_import_names()`, then `utils.fn()` resolves via existing dotted-name path
+- **CommonJS require**: `const X = require('mod')` -- detect in AST walker, add to import_map like ES6 imports
+- **Re-export tracking**: Extend star import resolution (currently Python-only) to JS/TS `export * from` and `export { X } from` patterns
+- Expected impact: resolves common patterns missed by current parser without new dependencies
+
+### Phase 3b: TypeScript enrichment via TS Compiler API (4-6 weeks)
 - Node.js subprocess invoking ts.createProgram()
 - `program.getTypeChecker().getSymbolAtLocation(node)` resolves method calls
 - JSON IPC between Python and Node.js
+- Would resolve SDK symbols (useState, Column, Depends) unreachable by tree-sitter
 - Expected impact: TypeScript resolution from ~30% to ~75%
 
 ### Phase 4: Go enrichment (2-4 weeks)
