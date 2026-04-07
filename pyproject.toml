@@ -32,6 +32,7 @@ dependencies = [
     "networkx>=3.2,<4",
     "watchdog>=4.0.0,<6",
     "igraph>=0.11.0",
+    "jedi>=0.19.2",
 ]
 
 [project.urls]
@@ -74,7 +75,7 @@ dev = [
     "ruff>=0.3.0,<1",
 ]
 enrichment = [
-    "jedi>=0.19.2",
+    # Kept for backwards compatibility; jedi is now a core dependency.
 ]
 
 [tool.hatch.build.targets.wheel]
