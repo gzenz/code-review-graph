@@ -259,11 +259,26 @@ def find_dead_code(
     ).fetchall():
         importer_files.setdefault(row[0], set()).add(row[1])
 
-    def _is_plausible_caller(edge_file: str, node_file: str) -> bool:
-        """A bare-name edge is plausible if it comes from the same file
-        or from a file that has an IMPORTS_FROM edge whose target matches
-        the node's file path."""
+    # Build set of globally unique names (only one non-test node with that name).
+    # For unique names, any bare-name CALLS edge is reliable — no ambiguity.
+    name_counts: dict[str, int] = {}
+    for row in conn.execute(
+        "SELECT name, COUNT(*) FROM nodes "
+        "WHERE kind IN ('Function', 'Class') AND is_test = 0 "
+        "GROUP BY name"
+    ).fetchall():
+        name_counts[row[0]] = row[1]
+
+    def _is_plausible_caller(
+        edge_file: str, node_file: str, node_name: str = "",
+    ) -> bool:
+        """A bare-name edge is plausible if it comes from the same file,
+        from a file that has an IMPORTS_FROM edge whose target matches
+        the node's file path, or the name is globally unique (no ambiguity)."""
         if edge_file == node_file:
+            return True
+        # Unique names (only one definition) have no ambiguity -- accept all callers.
+        if node_name and name_counts.get(node_name, 0) == 1:
             return True
         for imp_target in importer_files.get(edge_file, ()):
             if imp_target.startswith(node_file):
@@ -330,11 +345,17 @@ def find_dead_code(
         # unqualified target names (e.g. "run_agent" not "/path/agent.py::run_agent").
         if not any(e.kind == "CALLS" for e in incoming):
             bare = store.search_edges_by_target_name(node.name, kind="CALLS")
-            bare = [e for e in bare if _is_plausible_caller(e.file_path, node.file_path)]
+            bare = [
+                e for e in bare
+                if _is_plausible_caller(e.file_path, node.file_path, node.name)
+            ]
             incoming = incoming + bare
         if not any(e.kind == "TESTED_BY" for e in incoming):
             bare_tb = store.search_edges_by_target_name(node.name, kind="TESTED_BY")
-            bare_tb = [e for e in bare_tb if _is_plausible_caller(e.file_path, node.file_path)]
+            bare_tb = [
+                e for e in bare_tb
+                if _is_plausible_caller(e.file_path, node.file_path, node.name)
+            ]
             incoming = incoming + bare_tb
         # Check INHERITS -- classes with subclasses are not dead.
         if node.kind == "Class" and not any(e.kind == "INHERITS" for e in incoming):

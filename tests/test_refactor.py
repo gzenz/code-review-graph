@@ -351,14 +351,15 @@ class TestFindDeadCode:
         assert "BaseConnector" not in dead_names
 
     def test_find_dead_code_bare_name_not_tricked_by_unrelated_caller(self):
-        """Bare-name CALLS from unrelated files don't save a dead function."""
-        # Two unrelated functions named "handler" in different files
+        """Bare-name CALLS from unrelated files don't save a dead function
+        when there are multiple definitions with the same name."""
+        # Two unrelated functions named "processor" in different files
         self.store.upsert_node(NodeInfo(
-            kind="Function", name="handler", file_path="/repo/api/routes.py",
+            kind="Function", name="processor", file_path="/repo/api/routes.py",
             line_start=10, line_end=20, language="python",
         ))
         self.store.upsert_node(NodeInfo(
-            kind="Function", name="handler", file_path="/repo/worker/tasks.py",
+            kind="Function", name="processor", file_path="/repo/worker/tasks.py",
             line_start=10, line_end=20, language="python",
         ))
         # A bare CALLS edge from a third file that imports only routes.py
@@ -368,15 +369,15 @@ class TestFindDeadCode:
         ))
         self.store.upsert_edge(EdgeInfo(
             kind="CALLS", source="/repo/main.py::start",
-            target="handler", file_path="/repo/main.py", line=10,
+            target="processor", file_path="/repo/main.py", line=10,
         ))
         self.store.commit()
         dead = find_dead_code(self.store)
         dead_qnames = {d["qualified_name"] for d in dead}
-        # routes.py handler is saved (caller imports its file)
-        assert "/repo/api/routes.py::handler" not in dead_qnames
-        # worker/tasks.py handler is dead (no relationship with caller)
-        assert "/repo/worker/tasks.py::handler" in dead_qnames
+        # routes.py processor is saved (caller imports its file)
+        assert "/repo/api/routes.py::processor" not in dead_qnames
+        # worker/tasks.py processor is dead (no relationship with caller)
+        assert "/repo/worker/tasks.py::processor" in dead_qnames
 
     def test_find_dead_code_excludes_mock_variables(self):
         """Mock/stub variables in test files are not flagged as dead code."""

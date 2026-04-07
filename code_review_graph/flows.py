@@ -70,6 +70,10 @@ _ENTRY_NAME_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"^Test[A-Z]"),
     re.compile(r"^on_"),
     re.compile(r"^handle_"),
+    # Lambda / serverless handler functions (wired via config, not code calls)
+    re.compile(r"^handler$"),
+    re.compile(r"^handle$"),
+    re.compile(r"^lambda_handler$"),
     # Alembic migration entry points
     re.compile(r"^upgrade$"),
     re.compile(r"^downgrade$"),
