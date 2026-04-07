@@ -704,6 +704,16 @@ class GraphStore:
         ).fetchone()
         return row["cnt"] if row else 0
 
+    def get_flow_criticalities_for_node(self, node_id: int) -> list[float]:
+        """Return criticality values for all flows a node participates in."""
+        rows = self._conn.execute(
+            "SELECT f.criticality FROM flows f "
+            "JOIN flow_memberships fm ON fm.flow_id = f.id "
+            "WHERE fm.node_id = ?",
+            (node_id,),
+        ).fetchall()
+        return [r["criticality"] for r in rows]
+
     def get_node_community_id(self, node_id: int) -> int | None:
         """Return the ``community_id`` for a node, or ``None``."""
         row = self._conn.execute(

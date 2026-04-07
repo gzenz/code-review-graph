@@ -158,9 +158,13 @@ def compute_risk_score(store: GraphStore, node: GraphNode) -> float:
     """
     score = 0.0
 
-    # --- Flow participation (cap 0.25) ---
-    flow_count = store.count_flow_memberships(node.id)
-    score += min(flow_count * 0.05, 0.25)
+    # --- Flow participation (cap 0.25), weighted by criticality ---
+    flow_criticalities = store.get_flow_criticalities_for_node(node.id)
+    if flow_criticalities:
+        score += min(sum(flow_criticalities), 0.25)
+    else:
+        flow_count = store.count_flow_memberships(node.id)
+        score += min(flow_count * 0.05, 0.25)
 
     # --- Community crossing (cap 0.15) ---
     callers = store.get_edges_by_target(node.qualified_name)
