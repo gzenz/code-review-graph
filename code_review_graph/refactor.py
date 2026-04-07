@@ -192,7 +192,8 @@ def _is_entry_point(node: Any) -> bool:
 # Matches identifiers inside type annotations (e.g. "GoalCreate" in
 # "body: GoalCreate", "Optional[UserResponse]", "list[Item]").
 _TEST_FILE_RE = re.compile(
-    r"([\\/]__tests__[\\/]|\.spec\.[jt]sx?$|\.test\.[jt]sx?$|[\\/]test_[^/\\]*\.py$)",
+    r"([\\/]__tests__[\\/]|\.spec\.[jt]sx?$|\.test\.[jt]sx?$|[\\/]test_[^/\\]*\.py$"
+    r"|[\\/]e2e[_-]?tests?[\\/])",
 )
 
 
