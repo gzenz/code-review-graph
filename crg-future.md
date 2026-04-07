@@ -1,6 +1,6 @@
 # code-review-graph: Strategic Analysis & Future Direction
 
-Last updated: 2026-04-06 (v9 -- Jedi enrichment integrated, polymorphic self.method() next)
+Last updated: 2026-04-07 (v9 + upstream v2.2.1 merge + weighted flow criticality)
 
 This document captures what we've learned across 6 evaluation iterations, what's fundamentally hard, what approaches we've tried (and why some failed), and where the project should go next. It's meant to be a living reference so we don't repeat mistakes and can make informed architecture decisions.
 
@@ -404,8 +404,8 @@ Implemented in commit `13a53f8`. Flipped 2 xfail tests.
 ### Win 4: Framework entry point patterns -- DONE
 Added in commit `cdf8f21`: Express `app.get/post/use`, Android lifecycle `@Override`/`@Composable`, Kotlin `@HiltViewModel`/`@AndroidEntryPoint`, name patterns for `onCreate/onResume/onDestroy`, `doGet/doPost`, `errorHandler/middleware`. Verified by 9 passing entry point tests.
 
-### Win 5: Weighted flow criticality in risk scoring -- OPEN
-`changes.py:161-163` -- currently 0.05 per flow, capped at 0.25. Weight by flow criticality (already computed) to distinguish "in 1 trivial flow" from "in 3 critical flows".
+### Win 5: Weighted flow criticality in risk scoring -- DONE
+Implemented in commit `48c38dd`. `compute_risk_score()` now sums actual flow criticality values (0.0-1.0) via `get_flow_criticalities_for_node()` instead of flat 0.05 per membership. Falls back to flat count when no criticality data. Verified by `test_risk_score_weighted_by_flow_criticality`.
 
 ### Win 6: Qualify uppercase-receiver calls -- DONE
 Implemented in commit `5668532`. `_get_call_name()` now returns `"ClassName.method"` when receiver starts with uppercase. `_resolve_call_target()` handles the dotted format. Gadgetbridge went from 6/10 to 10/10.
@@ -542,6 +542,7 @@ Track key decisions so we don't re-litigate them.
 | 2026-04-06 | Jedi enrichment modest on HealthAgent (8 calls) | Most unresolved HealthAgent targets are SDK symbols (Column, Depends, useState) not reachable by Jedi. Factory-pattern calls are the main win | Phase 2 (scip-java) likely higher impact for Gadgetbridge |
 | 2026-04-06 | Override method dead code check via INHERITS traversal | When `self.sync()` in BaseConnector resolves to `BaseConnector.sync`, subclass overrides had zero callers. Fix: in find_dead_code(), check if parent class method has callers, mark overrides alive | 7 connector .sync() methods no longer FP. safe_request correctly stays dead (genuinely unused) |
 | 2026-04-06 | safe_request is genuinely dead, not a FP | grep confirms safe_request is defined but never called anywhere in HealthAgent. FP spot check expectation was wrong | FP spot check is actually 10/10 PASS |
+| 2026-04-07 | Weighted flow criticality in risk scoring | Flat 0.05/flow couldn't distinguish trivial vs critical flow membership. Sum actual criticality values (0.0-1.0) with fallback to flat count | Better risk differentiation for changed functions in critical flows |
 
 ---
 
