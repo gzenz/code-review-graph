@@ -1,6 +1,6 @@
 # code-review-graph: Strategic Analysis & Future Direction
 
-Last updated: 2026-04-07 (v12 + JSX handler tracking + class-level transitive TESTED_BY)
+Last updated: 2026-04-07 (v14 + nested func-ref tracking + decorator pattern gaps + HTTP handler patterns)
 
 This document captures what we've learned across 6 evaluation iterations, what's fundamentally hard, what approaches we've tried (and why some failed), and where the project should go next. It's meant to be a living reference so we don't repeat mistakes and can make informed architecture decisions.
 
@@ -23,46 +23,46 @@ This document captures what we've learned across 6 evaluation iterations, what's
 
 ---
 
-## 1. Where We Are (v12 Scorecard)
+## 1. Where We Are (v14 Scorecard)
 
-### HealthAgent (Python/TypeScript, 260 files)
+### HealthAgent (Python/TypeScript, 261 files)
 
-| Metric | v1 | v3 | v5 | v6 | v7 | v8 | v9 | v10 | v11 | v12 | Trend |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| Total edges | 22,737 | 16,594 | 16,650 | 19,362 | 19,392 | 21,296 | 21,308 | 21,926 | 24,585 | 24,711 | +126 from JSX handlers |
-| Resolution rate | 11.7% | 22.2% | 22.2% | 28.0% | 28.1% | 28.6% | 28.6% | **45.6%** | 39.5% | 39.5% | Stable (denominator grew v10->v11) |
-| Resolved CALLS | 1,736 | 2,016 | 2,016 | 2,976 | 3,003 | 3,525 | 3,537 | 5,831 | 6,084 | 6,104 | +20 from JSX handlers |
-| TESTED_BY | 3,603 | 3,387 | 3,387 | 3,420 | 3,431 | 3,482 | 3,510 | 3,570 | ~3,400 | 3,633 | +233 |
-| Decorator nodes | present | 0 | 240 | 244 | 244 | 244 | 244 | 244 | ~244 | 245 | Stable |
-| Dead code (tool) | 577 | 648 | 237 | 191 | 191 | ~150 | 139 | ~140 | 122 | 122 | Stable |
-| Grep FP rate | 92% | 90% | 27% | ? | ~33% | ~53% | ~53% | ~47% | ~73% | TBD | Regressed v10->v11 (raw SQL vs tool) |
-| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 8/10 | upsert_batch, safe_request 0 callers |
+| Metric | v1 | v3 | v5 | v6 | v7 | v8 | v9 | v10 | v11 | v12 | v13 | v14 | Trend |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Total edges | 22,737 | 16,594 | 16,650 | 19,362 | 19,392 | 21,296 | 21,308 | 21,926 | 24,585 | 24,711 | 24,820 | **24,991** | +171 from nested func-refs |
+| Resolution rate | 11.7% | 22.2% | 22.2% | 28.0% | 28.1% | 28.6% | 28.6% | **45.6%** | 39.5% | 39.5% | 39.4% | **40.0%** | +0.6pp |
+| Resolved CALLS | 1,736 | 2,016 | 2,016 | 2,976 | 3,003 | 3,525 | 3,537 | 5,831 | 6,084 | 6,104 | 6,117 | **6,281** | +164 |
+| TESTED_BY | 3,603 | 3,387 | 3,387 | 3,420 | 3,431 | 3,482 | 3,510 | 3,570 | ~3,400 | 3,633 | 3,665 | **3,667** | Stable |
+| Decorator nodes | present | 0 | 240 | 244 | 244 | 244 | 244 | 244 | ~244 | 245 | 245 | 245 | Stable |
+| Dead code (tool) | 577 | 648 | 237 | 191 | 191 | ~150 | 139 | ~140 | 122 | 122 | 122 | **101** | **-21 (-17%)** |
+| Grep FP rate | 92% | 90% | 27% | ? | ~33% | ~53% | ~53% | ~47% | ~73% | TBD | 44% | **40%** | Improving |
+| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 8/10 | 9/10 | **9/10** | upsert_batch only FP |
 
 ### Gadgetbridge (Java/Kotlin, 3574 files)
 
-| Metric | Before fixes | v6 | v7 | v8 | v9 | v10 | v11 | v12 | Target |
-|---|---|---|---|---|---|---|---|---|---|
-| callees_of(syncDataTypeSlice) | 0 | 14 | 13 (bare `sync`) | 14 (13 qualified + mutableListOf) | 14 | 15 (14 qualified + mutableListOf) | 15 | 14+mutableListOf | PASS |
-| callees_of(SleepSyncer.sync) | 1 | 18 | 15 | PASS | PASS | PASS (37 calls) | PASS | PASS | PASS |
-| callers_of(SleepSyncer.sync) | 0 | 0 | 0 | PASS (via qualified name) | PASS | PASS | PASS | PASS | PASS |
-| callers_of(DataExporter.export) | 0 | 3 | 0 external | 1 Kotlin caller | 1 Kotlin caller | PASS (1 ext + 11 int) | PASS | PASS | PASS |
-| tests_for(RecordedWorkoutSyncer) | 0 | WorkoutSyncerUtilsTest | PASS | PASS | PARTIAL | PARTIAL | PARTIAL | **PASS (41 tests)** | PASS |
-| Communities | 0 | 11 | 11 | 11 | 11 | 11 | 11 | 11 | 10-50 |
-| Flows | ~100 | 3,224 | 3,226 | 3,059 | 3,059 | 4,060 | ~4,000 | top10: 0.95-0.96 | lifecycle entries |
-| TESTED_BY edges | 0 | 6,140 | 7,384 | - | 7,409 | 7,409 | 7,409 | 7,409 | - |
-| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.0-1.0 | 0.25-0.85 | 0.25-0.85 | differentiated |
-| Resolution rate | - | - | - | 32.6% | 32.6% | **36.3%** | 35.9% | 35.9% | - |
-| Bare-name resolved | - | - | - | - | - | 5,625 | 6,126 | 6,126 | - |
+| Metric | Before fixes | v6 | v7 | v8 | v9 | v10 | v11 | v12 | v14 | Target |
+|---|---|---|---|---|---|---|---|---|---|---|
+| callees_of(syncDataTypeSlice) | 0 | 14 | 13 (bare `sync`) | 14 (13 qualified + mutableListOf) | 14 | 15 (14 qualified + mutableListOf) | 15 | 14+mutableListOf | PASS | PASS |
+| callees_of(SleepSyncer.sync) | 1 | 18 | 15 | PASS | PASS | PASS (37 calls) | PASS | PASS | PASS | PASS |
+| callers_of(SleepSyncer.sync) | 0 | 0 | 0 | PASS (via qualified name) | PASS | PASS | PASS | PASS | PASS | PASS |
+| callers_of(DataExporter.export) | 0 | 3 | 0 external | 1 Kotlin caller | 1 Kotlin caller | PASS (1 ext + 11 int) | PASS | PASS | PASS | PASS |
+| tests_for(RecordedWorkoutSyncer) | 0 | WorkoutSyncerUtilsTest | PASS | PASS | PARTIAL | PARTIAL | PARTIAL | **PASS (41 tests)** | PASS | PASS |
+| Communities | 0 | 11 | 11 | 11 | 11 | 11 | 11 | 11 | 11 | 10-50 |
+| Flows | ~100 | 3,224 | 3,226 | 3,059 | 3,059 | 4,060 | ~4,000 | top10: 0.95-0.96 | 0.95-0.96 | lifecycle entries |
+| TESTED_BY edges | 0 | 6,140 | 7,384 | - | 7,409 | 7,409 | 7,409 | 7,409 | 7,409 | - |
+| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.0-1.0 | 0.25-0.85 | 0.25-0.85 | 0.25-0.85 | differentiated |
+| Resolution rate | - | - | - | 32.6% | 32.6% | **36.3%** | 35.9% | 35.9% | 35.9% | - |
 
-### Gadgetbridge scorecard: **10/10 PASS** (v12)
+### Gadgetbridge scorecard: **11/11 PASS** (v14)
 
-Class-level transitive TESTED_BY fixed the last PARTIAL: `get_transitive_tests("RecordedWorkoutSyncer")` now returns 41 indirect tests by expanding the class node to its methods via CONTAINS edges, following their CALLS chains, then collecting TESTED_BY on callees.
+All queries pass including transitive TESTED_BY for RecordedWorkoutSyncer and impact radius. Community distribution remains skewed (91% in one mega-community) but within the 10-50 target range.
 
-### HealthAgent v12 notes
+### HealthAgent v14 key improvements
 
-- JSX handler tracking (`_walk_func_ref_args()` jsx_expression detection) added 126 edges but only 1 `handle*` CALLS edge. The HealthAgent frontend doesn't use `handleXxx` JSX patterns heavily. Fix is correct but low-impact for this project.
-- FP spot check regression (10/10 -> 8/10): `upsert_batch` and `safe_request` now show 0 callers. May be query methodology difference (v11 used MCP tool, v12 used raw SQL `target_qualified LIKE '%::name'`). Needs investigation.
-- Grep FP rate needs re-audit with tool's `find_dead_code()` output (not raw SQL).
+- **Nested function-ref-as-argument tracking**: `_walk_func_ref_args()` now adds nested function names to `defined_names` as it recurses, so `Thread(target=agent_thread)` and `run_in_executor(None, _build_prompt)` emit CALLS edges. Fixed 5 FPs.
+- **Decorator pattern gaps filled**: bare `@tool`, Pydantic AI `tool_plain/system_prompt/result_validator`, Flask blueprint `@bp.route`, Starlette `middleware/exception_handler`. Confirmed `request_id_middleware` excluded.
+- **Python HTTP handler entry points**: `do_GET`/`do_POST`/`log_message` added to `_ENTRY_NAME_PATTERNS`. Fixed 2 FPs.
+- **Dead code dropped 17%**: 122 -> 101. Remaining 101 includes 85 frontend, 7 connector classes (string-based imports), and backend functions called via `self.method()` inheritance.
 
 ---
 
@@ -506,8 +506,11 @@ The upstream maintainer hasn't been responsive. Our 3 draft PRs (#104, #107, #10
 | 20 | Transitive TESTED_BY (tests_for + risk scoring) | **DONE** | `04327b6` |
 | 21 | JSX attribute function reference tracking | **DONE** | jsx_expression detection in _walk_func_ref_args |
 | 22 | Class-level transitive TESTED_BY | **DONE** | CONTAINS expansion in get_transitive_tests |
-| 23 | scip-java enrichment for Java/Kotlin | **OPEN** | |
-| 24 | TS Compiler API enrichment | **NOT WORTH DOING** | Resolution ceiling is external API calls |
+| 23 | Decorator pattern gaps (bare @tool, Pydantic AI, Flask bp, middleware) | **DONE** | `06aeb42` -- fills gaps in _FRAMEWORK_DECORATOR_PATTERNS |
+| 24 | Nested function-ref-as-argument tracking | **DONE** | `0f26ef5` -- adds nested names to defined_names during walk |
+| 25 | Python HTTP handler entry points (do_GET, log_message) | **DONE** | `0f26ef5` -- added to _ENTRY_NAME_PATTERNS |
+| 26 | scip-java enrichment for Java/Kotlin | **OPEN** | |
+| 27 | TS Compiler API enrichment | **NOT WORTH DOING** | Resolution ceiling is external API calls |
 
 ### TDD xfail tracker (`tests/test_pain_points.py`)
 
@@ -525,7 +528,7 @@ Each xfail represents a concrete improvement target. Flip it to pass = the fix w
 | ~~`test_java_import_per_symbol`~~ (integration) | ~~Resolution~~ | ~~DONE (package-path fallback `a0ba7d2`)~~ |
 | ~~`test_kotlin_import_per_symbol`~~ (integration) | ~~Resolution~~ | ~~DONE (package-path fallback `a0ba7d2`)~~ |
 
-**9/9 resolved. 0 remaining xfails. 6 additional tests added (3 transitive TESTED_BY, 2 JSX handlers, 1 class-level transitive).**
+**9/9 resolved. 0 remaining xfails. 15 additional tests added (3 transitive TESTED_BY, 2 JSX handlers, 1 class-level transitive, 7 decorator patterns, 2 nested func-refs).**
 
 ---
 
@@ -572,6 +575,10 @@ Track key decisions so we don't re-litigate them.
 | 2026-04-07 | JSX attribute function references | `onClick={handleDelete}` uses jsx_expression node not in arg_list_types. Added jsx_expression scanning to _walk_func_ref_args() | Technically correct but low impact on HealthAgent (1 handle* edge). Will help React-heavy codebases |
 | 2026-04-07 | Class-level transitive TESTED_BY | get_transitive_tests() failed for class names because CALLS edges have method-level sources. Expanded class nodes to methods via CONTAINS edges | Fixed last Gadgetbridge PARTIAL: RecordedWorkoutSyncer returns 41 transitive tests |
 | 2026-04-07 | Grep FP root cause is NOT JSX handlers | v11 73% FP rate was attributed to JSX onClick handlers but actual cause is FastAPI/Pydantic/CLI endpoint functions without CALLS edges. Decorator metadata exists in extra but isn't used for dead code exclusion | Next priority: decorator-based exclusion in find_dead_code() |
+| 2026-04-07 | Decorator pattern gaps filled | _FRAMEWORK_DECORATOR_PATTERNS missed bare @tool, Pydantic AI tool_plain/system_prompt/result_validator, Flask @bp.route, Starlette middleware/exception_handler. Added patterns and generic \w+\.route\b | request_id_middleware now excluded from dead code |
+| 2026-04-07 | Nested func names added to defined_names | _walk_func_ref_args only matched top-level defined_names. Nested functions (def inside def) passed as Thread(target=fn) or run_in_executor(None, fn) were invisible | Dead code 122->101 (-17%), 5 FPs fixed (agent_thread, _build_prompt, _produce) |
+| 2026-04-07 | Python HTTP handler entry points | do_GET/do_POST (BaseHTTPRequestHandler) and log_message not in _ENTRY_NAME_PATTERNS. Existing doGet pattern was Java Servlet only (camelCase) | 2 FPs fixed |
+| 2026-04-07 | upsert_batch FP is instance method inheritance gap | Called via self.upsert_batch() in 11 subclass files but 0 CALLS edges. Plausible caller filter should work (subclasses import base) but bare-name search doesn't find the edges | Next priority: investigate plausible caller path for self.method() calls |
 
 ---
 
