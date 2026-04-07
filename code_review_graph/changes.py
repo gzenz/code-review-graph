@@ -181,9 +181,9 @@ def compute_risk_score(store: GraphStore, node: GraphNode) -> float:
                 cross_community += 1
     score += min(cross_community * 0.05, 0.15)
 
-    # --- Test coverage ---
-    tested_edges = store.get_edges_by_target(node.qualified_name)
-    test_count = sum(1 for e in tested_edges if e.kind == "TESTED_BY")
+    # --- Test coverage (direct + transitive) ---
+    transitive_tests = store.get_transitive_tests(node.qualified_name)
+    test_count = len(transitive_tests)
     score += 0.30 - (min(test_count / 5.0, 1.0) * 0.25)
 
     # --- Security sensitivity ---

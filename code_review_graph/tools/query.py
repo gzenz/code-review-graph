@@ -281,28 +281,19 @@ def query_graph(
                         results.append(node_to_dict(child))
 
         elif pattern == "tests_for":
-            for e in store.get_edges_by_target(qn):
-                if e.kind == "TESTED_BY":
-                    test = store.get_node(e.source_qualified)
-                    if test:
-                        results.append(node_to_dict(test))
-            # Fallback: TESTED_BY edges may store bare-name targets
-            if not results and node:
-                bare_tb = store.search_edges_by_target_name(
-                    node.name, kind="TESTED_BY",
-                )
-                for e in bare_tb:
-                    test = store.get_node(e.source_qualified)
-                    if test:
-                        results.append(node_to_dict(test))
+            # Use transitive lookup: direct TESTED_BY + 1-hop CALLS->TESTED_BY
+            transitive = store.get_transitive_tests(qn)
+            seen = {r["qualified_name"] for r in transitive}
+            for r in transitive:
+                results.append(r)
             # Also search by naming convention
             name = node.name if node else target
             test_nodes = store.search_nodes(f"test_{name}", limit=10)
             test_nodes += store.search_nodes(f"Test{name}", limit=10)
-            seen = {r.get("qualified_name") for r in results}
             for t in test_nodes:
                 if t.qualified_name not in seen and t.is_test:
                     results.append(node_to_dict(t))
+                    seen.add(t.qualified_name)
 
         elif pattern == "inheritors_of":
             seen_qn: set[str] = set()

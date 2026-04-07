@@ -16,8 +16,6 @@ Categories:
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from code_review_graph.changes import compute_risk_score
 from code_review_graph.flows import detect_entry_points
 from code_review_graph.graph import GraphStore
@@ -1318,3 +1316,71 @@ class TestJediEnrichment:
         finally:
             import shutil
             shutil.rmtree(proj, ignore_errors=True)
+
+
+# ===================================================================
+# 5. Transitive TESTED_BY -- tests_for should follow CALLS chains
+# ===================================================================
+
+
+class TestTransitiveTestedBy(_GraphTestBase):
+    """tests_for(A) should find tests that cover A's callees transitively.
+
+    Real-world case: RecordedWorkoutSyncer.sync CALLS WorkoutSyncerUtils.map...
+    and WorkoutSyncerUtilsTest tests WorkoutSyncerUtils.map... -- so
+    tests_for(RecordedWorkoutSyncer) should return WorkoutSyncerUtilsTest.
+    """
+
+    def test_transitive_tested_by_one_hop(self):
+        """A calls B, test covers B -> tests_for(A) should include that test."""
+        # Production: syncer.sync -> utils.map
+        self._add_func("sync", path="syncer.kt", parent="Syncer")
+        self._add_func("map", path="utils.kt", parent="Utils")
+        self._add_edge("CALLS", "syncer.kt::Syncer.sync", "utils.kt::Utils.map")
+
+        # Test: test_map tests utils.map
+        self._add_func("test_map", path="test_utils.kt", is_test=True)
+        self._add_edge("CALLS", "test_utils.kt::test_map", "utils.kt::Utils.map")
+        self._add_edge("TESTED_BY", "test_utils.kt::test_map", "utils.kt::Utils.map")
+
+        results = self.store.get_transitive_tests("syncer.kt::Syncer.sync")
+        test_names = {r["name"] for r in results}
+        assert "test_map" in test_names
+
+    def test_transitive_does_not_duplicate_direct(self):
+        """If A already has direct tests, transitive should not duplicate them."""
+        self._add_func("sync", path="syncer.kt", parent="Syncer")
+        self._add_func("map", path="utils.kt", parent="Utils")
+        self._add_edge("CALLS", "syncer.kt::Syncer.sync", "utils.kt::Utils.map")
+
+        # Direct test for sync
+        self._add_func("test_sync", path="test_syncer.kt", is_test=True)
+        self._add_edge("CALLS", "test_syncer.kt::test_sync", "syncer.kt::Syncer.sync")
+        self._add_edge("TESTED_BY", "test_syncer.kt::test_sync", "syncer.kt::Syncer.sync")
+
+        # Indirect test for utils.map
+        self._add_func("test_map", path="test_utils.kt", is_test=True)
+        self._add_edge("CALLS", "test_utils.kt::test_map", "utils.kt::Utils.map")
+        self._add_edge("TESTED_BY", "test_utils.kt::test_map", "utils.kt::Utils.map")
+
+        results = self.store.get_transitive_tests("syncer.kt::Syncer.sync")
+        test_names = [r["name"] for r in results]
+        # Both tests present, no duplicates
+        assert "test_sync" in test_names
+        assert "test_map" in test_names
+        assert len(test_names) == len(set(test_names))
+
+    def test_transitive_marks_indirect(self):
+        """Indirect tests should be marked as such."""
+        self._add_func("sync", path="syncer.kt", parent="Syncer")
+        self._add_func("map", path="utils.kt", parent="Utils")
+        self._add_edge("CALLS", "syncer.kt::Syncer.sync", "utils.kt::Utils.map")
+
+        self._add_func("test_map", path="test_utils.kt", is_test=True)
+        self._add_edge("CALLS", "test_utils.kt::test_map", "utils.kt::Utils.map")
+        self._add_edge("TESTED_BY", "test_utils.kt::test_map", "utils.kt::Utils.map")
+
+        results = self.store.get_transitive_tests("syncer.kt::Syncer.sync")
+        indirect = [r for r in results if r.get("indirect")]
+        assert len(indirect) == 1
+        assert indirect[0]["name"] == "test_map"

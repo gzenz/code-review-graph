@@ -303,6 +303,89 @@ class GraphStore:
         ).fetchall()
         return [self._row_to_edge(r) for r in rows]
 
+    def get_transitive_tests(
+        self, qualified_name: str, max_depth: int = 1,
+    ) -> list[dict]:
+        """Find tests covering a node, including indirect (transitive) coverage.
+
+        1. Direct: TESTED_BY edges targeting this node (+ bare-name fallback).
+        2. Indirect: follow outgoing CALLS edges up to *max_depth* hops,
+           then collect TESTED_BY edges on each callee.
+
+        Returns a list of dicts with node fields plus ``indirect: bool``.
+        """
+        conn = self._conn
+        seen: set[str] = set()
+        results: list[dict] = []
+
+        def _node_dict(qn: str, indirect: bool) -> dict | None:
+            row = conn.execute(
+                "SELECT * FROM nodes WHERE qualified_name = ?", (qn,)
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "name": row["name"],
+                "qualified_name": row["qualified_name"],
+                "file_path": row["file_path"],
+                "kind": row["kind"],
+                "indirect": indirect,
+            }
+
+        # Direct TESTED_BY
+        for row in conn.execute(
+            "SELECT source_qualified FROM edges "
+            "WHERE target_qualified = ? AND kind = 'TESTED_BY'",
+            (qualified_name,),
+        ).fetchall():
+            src = row["source_qualified"]
+            if src not in seen:
+                seen.add(src)
+                d = _node_dict(src, indirect=False)
+                if d:
+                    results.append(d)
+
+        # Bare-name fallback for direct
+        bare = qualified_name.rsplit("::", 1)[-1] if "::" in qualified_name else qualified_name
+        for row in conn.execute(
+            "SELECT source_qualified FROM edges "
+            "WHERE target_qualified = ? AND kind = 'TESTED_BY'",
+            (bare,),
+        ).fetchall():
+            src = row["source_qualified"]
+            if src not in seen:
+                seen.add(src)
+                d = _node_dict(src, indirect=False)
+                if d:
+                    results.append(d)
+
+        # Transitive: follow CALLS edges, then collect TESTED_BY on callees
+        frontier = {qualified_name}
+        for _ in range(max_depth):
+            next_frontier: set[str] = set()
+            for qn in frontier:
+                for row in conn.execute(
+                    "SELECT target_qualified FROM edges "
+                    "WHERE source_qualified = ? AND kind = 'CALLS'",
+                    (qn,),
+                ).fetchall():
+                    next_frontier.add(row["target_qualified"])
+            for callee in next_frontier:
+                for row in conn.execute(
+                    "SELECT source_qualified FROM edges "
+                    "WHERE target_qualified = ? AND kind = 'TESTED_BY'",
+                    (callee,),
+                ).fetchall():
+                    src = row["source_qualified"]
+                    if src not in seen:
+                        seen.add(src)
+                        d = _node_dict(src, indirect=True)
+                        if d:
+                            results.append(d)
+            frontier = next_frontier
+
+        return results
+
     def resolve_bare_call_targets(self) -> int:
         """Batch-resolve bare-name CALLS targets using the global node table.
 

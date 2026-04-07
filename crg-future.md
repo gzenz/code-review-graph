@@ -50,7 +50,7 @@ This document captures what we've learned across 6 evaluation iterations, what's
 | Communities | 0 | 11 | 11 | 11 | 11 | 11 | 10-50 |
 | Flows | ~100 | 3,224 | 3,226 | 3,059 | 3,059 | 4,060 | lifecycle entries |
 | TESTED_BY edges | 0 | 6,140 | 7,384 | - | 7,409 | 7,409 | - |
-| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | differentiated |
+| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.0-1.0 | differentiated |
 | Resolution rate | - | - | - | 32.6% | 32.6% | **36.3%** | - |
 | Bare-name resolved | - | - | - | - | - | 5,625 | - |
 
