@@ -1064,6 +1064,27 @@ class CodeParser:
                         ))
                 continue  # argument list fully scanned, skip recursion
 
+            # JSX attribute references: onClick={handleDelete}
+            if child.type == "jsx_expression":
+                for sub in child.children:
+                    if sub.type in ident_types:
+                        ref_name = sub.text.decode("utf-8", errors="replace")
+                        if ref_name in defined_names:
+                            source = (
+                                self._qualify(
+                                    enclosing_func, file_path, enclosing_class,
+                                )
+                                if enclosing_func else file_path
+                            )
+                            edges.append(EdgeInfo(
+                                kind="CALLS",
+                                source=source,
+                                target=ref_name,
+                                file_path=file_path,
+                                line=sub.start_point[0] + 1,
+                            ))
+                continue  # jsx_expression fully scanned
+
             # Recurse into other children
             self._walk_func_ref_args(
                 child, language, file_path, edges, defined_names,

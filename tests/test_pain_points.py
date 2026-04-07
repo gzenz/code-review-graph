@@ -1387,3 +1387,152 @@ class TestTransitiveTestedBy(_GraphTestBase):
         indirect = [r for r in results if r.get("indirect")]
         assert len(indirect) == 1
         assert indirect[0]["name"] == "test_map"
+
+
+# ===================================================================
+# 8. JSX HANDLER FUNCTION REFERENCES
+# ===================================================================
+
+
+class TestJSXHandlerRefs:
+    """Pain point: onClick={handleDelete} does not emit a CALLS edge.
+
+    _walk_func_ref_args only scans argument_list nodes, not jsx_expression
+    nodes, so function references in JSX attributes are missed entirely.
+    This is the #1 source of dead code false positives in React/TSX codebases.
+    """
+
+    def setup_method(self):
+        self.parser = CodeParser()
+
+    def test_jsx_onclick_emits_calls_edge(self):
+        """<button onClick={handleDelete}> should emit a CALLS edge."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/Component.tsx"),
+            (
+                b"function handleDelete() { console.log('del'); }\n"
+                b"function MyComponent() {\n"
+                b"  return <button onClick={handleDelete}>Delete</button>;\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = [e.target for e in calls]
+        assert any("handleDelete" in t for t in targets), (
+            f"Expected CALLS to handleDelete, got: {targets}"
+        )
+
+    def test_jsx_multiple_handlers(self):
+        """Multiple JSX handlers in one component should all emit CALLS edges."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/Form.tsx"),
+            (
+                b"function handleChange(e: any) { }\n"
+                b"function handleSubmit() { }\n"
+                b"function Form() {\n"
+                b"  return (\n"
+                b"    <form onSubmit={handleSubmit}>\n"
+                b"      <input onChange={handleChange} />\n"
+                b"    </form>\n"
+                b"  );\n"
+                b"}\n"
+            ),
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = [e.target for e in calls]
+        assert any("handleSubmit" in t for t in targets), (
+            f"Expected CALLS to handleSubmit, got: {targets}"
+        )
+        assert any("handleChange" in t for t in targets), (
+            f"Expected CALLS to handleChange, got: {targets}"
+        )
+
+
+# ===================================================================
+# 9. CLASS-LEVEL TRANSITIVE TESTED_BY
+# ===================================================================
+
+
+class TestClassLevelTransitiveTestedBy(_GraphTestBase):
+    """Pain point: get_transitive_tests('ClassName') returns nothing.
+
+    CALLS edges have method-level sources (ClassName.method), not class-level.
+    When queried with a class qualified name, the transitive lookup finds no
+    outgoing CALLS edges and returns empty.
+    """
+
+    def test_class_level_query_finds_method_tests(self):
+        """tests_for(Syncer) should find tests for Syncer.sync's callees."""
+        self._add_class("Syncer", path="syncer.kt")
+        # Method of that class
+        self._add_func("sync", path="syncer.kt", parent="Syncer")
+        self._add_edge("CONTAINS", "syncer.kt::Syncer", "syncer.kt::Syncer.sync")
+
+        # sync calls Utils.map
+        self._add_func("map", path="utils.kt", parent="Utils")
+        self._add_edge("CALLS", "syncer.kt::Syncer.sync", "utils.kt::Utils.map")
+
+        # test_map tests Utils.map
+        self._add_func("test_map", path="test_utils.kt", is_test=True)
+        self._add_edge("CALLS", "test_utils.kt::test_map", "utils.kt::Utils.map")
+        self._add_edge("TESTED_BY", "test_utils.kt::test_map", "utils.kt::Utils.map")
+
+        results = self.store.get_transitive_tests("syncer.kt::Syncer")
+        test_names = {r["name"] for r in results}
+        assert "test_map" in test_names, (
+            f"Expected test_map in class-level transitive tests, got: {test_names}"
+        )
+
+
+# ===================================================================
+# 10. DECORATOR PATTERN GAPS IN DEAD CODE EXCLUSION
+# ===================================================================
+
+
+class TestDecoratorPatternGaps(_GraphTestBase):
+    """Pain point: functions with framework decorators not in the pattern list
+    are falsely reported as dead code. Gaps include bare @tool (LangChain),
+    Pydantic AI agent methods, Flask blueprints, and middleware decorators.
+    """
+
+    def test_bare_tool_decorator_not_dead(self):
+        """@tool (LangChain) should exclude from dead code."""
+        self._add_func("search_docs", extra={"decorators": ["tool"]})
+        dead_names = {d["name"] for d in find_dead_code(self.store)}
+        assert "search_docs" not in dead_names
+
+    def test_pydantic_ai_tool_plain_not_dead(self):
+        """@agent.tool_plain should exclude from dead code."""
+        self._add_func("get_weather", extra={"decorators": ["weather_agent.tool_plain"]})
+        dead_names = {d["name"] for d in find_dead_code(self.store)}
+        assert "get_weather" not in dead_names
+
+    def test_pydantic_ai_system_prompt_not_dead(self):
+        """@agent.system_prompt should exclude from dead code."""
+        self._add_func("build_prompt", extra={"decorators": ["agent.system_prompt"]})
+        dead_names = {d["name"] for d in find_dead_code(self.store)}
+        assert "build_prompt" not in dead_names
+
+    def test_pydantic_ai_result_validator_not_dead(self):
+        """@agent.result_validator should exclude from dead code."""
+        self._add_func("validate_output", extra={"decorators": ["agent.result_validator"]})
+        dead_names = {d["name"] for d in find_dead_code(self.store)}
+        assert "validate_output" not in dead_names
+
+    def test_flask_blueprint_route_not_dead(self):
+        """@bp.route('/path') should exclude from dead code."""
+        self._add_func("list_items", extra={"decorators": ['bp.route("/items")']})
+        dead_names = {d["name"] for d in find_dead_code(self.store)}
+        assert "list_items" not in dead_names
+
+    def test_middleware_decorator_not_dead(self):
+        """@app.middleware('http') should exclude from dead code."""
+        self._add_func("log_requests", extra={"decorators": ['app.middleware("http")']})
+        dead_names = {d["name"] for d in find_dead_code(self.store)}
+        assert "log_requests" not in dead_names
+
+    def test_exception_handler_not_dead(self):
+        """@app.exception_handler(404) should exclude from dead code."""
+        self._add_func("not_found", extra={"decorators": ["app.exception_handler(404)"]})
+        dead_names = {d["name"] for d in find_dead_code(self.store)}
+        assert "not_found" not in dead_names

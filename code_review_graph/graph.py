@@ -318,6 +318,20 @@ class GraphStore:
         seen: set[str] = set()
         results: list[dict] = []
 
+        # If the input is a class, expand to its methods first.
+        input_qns = [qualified_name]
+        row = conn.execute(
+            "SELECT kind FROM nodes WHERE qualified_name = ?",
+            (qualified_name,),
+        ).fetchone()
+        if row and row["kind"] == "Class":
+            for mrow in conn.execute(
+                "SELECT target_qualified FROM edges "
+                "WHERE source_qualified = ? AND kind = 'CONTAINS'",
+                (qualified_name,),
+            ).fetchall():
+                input_qns.append(mrow["target_qualified"])
+
         def _node_dict(qn: str, indirect: bool) -> dict | None:
             row = conn.execute(
                 "SELECT * FROM nodes WHERE qualified_name = ?", (qn,)
@@ -333,17 +347,18 @@ class GraphStore:
             }
 
         # Direct TESTED_BY
-        for row in conn.execute(
-            "SELECT source_qualified FROM edges "
-            "WHERE target_qualified = ? AND kind = 'TESTED_BY'",
-            (qualified_name,),
-        ).fetchall():
-            src = row["source_qualified"]
-            if src not in seen:
-                seen.add(src)
-                d = _node_dict(src, indirect=False)
-                if d:
-                    results.append(d)
+        for qn in input_qns:
+            for row in conn.execute(
+                "SELECT source_qualified FROM edges "
+                "WHERE target_qualified = ? AND kind = 'TESTED_BY'",
+                (qn,),
+            ).fetchall():
+                src = row["source_qualified"]
+                if src not in seen:
+                    seen.add(src)
+                    d = _node_dict(src, indirect=False)
+                    if d:
+                        results.append(d)
 
         # Bare-name fallback for direct
         bare = qualified_name.rsplit("::", 1)[-1] if "::" in qualified_name else qualified_name
@@ -360,7 +375,7 @@ class GraphStore:
                     results.append(d)
 
         # Transitive: follow CALLS edges, then collect TESTED_BY on callees
-        frontier = {qualified_name}
+        frontier = set(input_qns)
         for _ in range(max_depth):
             next_frontier: set[str] = set()
             for qn in frontier:

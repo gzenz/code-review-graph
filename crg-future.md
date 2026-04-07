@@ -1,6 +1,6 @@
 # code-review-graph: Strategic Analysis & Future Direction
 
-Last updated: 2026-04-07 (v10 + transitive TESTED_BY + resolution ceiling analysis)
+Last updated: 2026-04-07 (v12 + JSX handler tracking + class-level transitive TESTED_BY)
 
 This document captures what we've learned across 6 evaluation iterations, what's fundamentally hard, what approaches we've tried (and why some failed), and where the project should go next. It's meant to be a living reference so we don't repeat mistakes and can make informed architecture decisions.
 
@@ -23,44 +23,46 @@ This document captures what we've learned across 6 evaluation iterations, what's
 
 ---
 
-## 1. Where We Are (v10 Scorecard)
+## 1. Where We Are (v12 Scorecard)
 
-### HealthAgent (Python/TypeScript, 253 files)
+### HealthAgent (Python/TypeScript, 260 files)
 
-| Metric | v1 | v3 | v5 | v6 | v7 | v8 | v9 | v10 | Trend |
+| Metric | v1 | v3 | v5 | v6 | v7 | v8 | v9 | v10 | v11 | v12 | Trend |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Total edges | 22,737 | 16,594 | 16,650 | 19,362 | 19,392 | 21,296 | 21,308 | 21,926 | 24,585 | 24,711 | +126 from JSX handlers |
+| Resolution rate | 11.7% | 22.2% | 22.2% | 28.0% | 28.1% | 28.6% | 28.6% | **45.6%** | 39.5% | 39.5% | Stable (denominator grew v10->v11) |
+| Resolved CALLS | 1,736 | 2,016 | 2,016 | 2,976 | 3,003 | 3,525 | 3,537 | 5,831 | 6,084 | 6,104 | +20 from JSX handlers |
+| TESTED_BY | 3,603 | 3,387 | 3,387 | 3,420 | 3,431 | 3,482 | 3,510 | 3,570 | ~3,400 | 3,633 | +233 |
+| Decorator nodes | present | 0 | 240 | 244 | 244 | 244 | 244 | 244 | ~244 | 245 | Stable |
+| Dead code (tool) | 577 | 648 | 237 | 191 | 191 | ~150 | 139 | ~140 | 122 | 122 | Stable |
+| Grep FP rate | 92% | 90% | 27% | ? | ~33% | ~53% | ~53% | ~47% | ~73% | TBD | Regressed v10->v11 (raw SQL vs tool) |
+| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 8/10 | upsert_batch, safe_request 0 callers |
+
+### Gadgetbridge (Java/Kotlin, 3574 files)
+
+| Metric | Before fixes | v6 | v7 | v8 | v9 | v10 | v11 | v12 | Target |
 |---|---|---|---|---|---|---|---|---|---|
-| Total edges | 22,737 | 16,594 | 16,650 | 19,362 | 19,392 | 21,296 | 21,308 | 21,926 | +618 from bare-name resolution |
-| Resolution rate | 11.7% | 22.2% | 22.2% | 28.0% | 28.1% | 28.6% | 28.6% | **45.6%** | **+17pp** from bare-name resolution |
-| Resolved CALLS | 1,736 | 2,016 | 2,016 | 2,976 | 3,003 | 3,525 | 3,537 | 5,831 | +2,294 from bare-name resolution |
-| TESTED_BY | 3,603 | 3,387 | 3,387 | 3,420 | 3,431 | 3,482 | 3,510 | 3,570 | Stable |
-| Decorator nodes | present | 0 | 240 | 244 | 244 | 244 | 244 | 244 | Fixed in v4 |
-| Dead code (tool) | 577 | 648 | 237 | 191 | 191 | ~150 | 139 | ~140 | Stable |
-| Grep FP rate | 92% | 90% | 27% | ? | ~33% | ~53% | ~53% | ~47% | Improving |
-| FP spot check | 1/10 | 2/10 | 9/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | safe_request genuinely dead |
+| callees_of(syncDataTypeSlice) | 0 | 14 | 13 (bare `sync`) | 14 (13 qualified + mutableListOf) | 14 | 15 (14 qualified + mutableListOf) | 15 | 14+mutableListOf | PASS |
+| callees_of(SleepSyncer.sync) | 1 | 18 | 15 | PASS | PASS | PASS (37 calls) | PASS | PASS | PASS |
+| callers_of(SleepSyncer.sync) | 0 | 0 | 0 | PASS (via qualified name) | PASS | PASS | PASS | PASS | PASS |
+| callers_of(DataExporter.export) | 0 | 3 | 0 external | 1 Kotlin caller | 1 Kotlin caller | PASS (1 ext + 11 int) | PASS | PASS | PASS |
+| tests_for(RecordedWorkoutSyncer) | 0 | WorkoutSyncerUtilsTest | PASS | PASS | PARTIAL | PARTIAL | PARTIAL | **PASS (41 tests)** | PASS |
+| Communities | 0 | 11 | 11 | 11 | 11 | 11 | 11 | 11 | 10-50 |
+| Flows | ~100 | 3,224 | 3,226 | 3,059 | 3,059 | 4,060 | ~4,000 | top10: 0.95-0.96 | lifecycle entries |
+| TESTED_BY edges | 0 | 6,140 | 7,384 | - | 7,409 | 7,409 | 7,409 | 7,409 | - |
+| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.0-1.0 | 0.25-0.85 | 0.25-0.85 | differentiated |
+| Resolution rate | - | - | - | 32.6% | 32.6% | **36.3%** | 35.9% | 35.9% | - |
+| Bare-name resolved | - | - | - | - | - | 5,625 | 6,126 | 6,126 | - |
 
-### Gadgetbridge (Java/Kotlin, 3573 files)
+### Gadgetbridge scorecard: **10/10 PASS** (v12)
 
-| Metric | Before fixes | v6 | v7 | v8 | v9 | v10 | Target |
-|---|---|---|---|---|---|---|---|
-| callees_of(syncDataTypeSlice) | 0 | 14 | 13 (bare `sync`) | 14 (13 qualified + mutableListOf) | 14 | 15 (14 qualified + mutableListOf) | PASS |
-| callees_of(SleepSyncer.sync) | 1 | 18 | 15 | PASS | PASS | PASS (37 calls) | PASS |
-| callers_of(SleepSyncer.sync) | 0 | 0 | 0 | PASS (via qualified name) | PASS | PASS | PASS |
-| callers_of(DataExporter.export) | 0 | 3 | 0 external | 1 Kotlin caller | 1 Kotlin caller | PASS (1 ext + 11 int) | PASS |
-| tests_for(RecordedWorkoutSyncer) | 0 | WorkoutSyncerUtilsTest | PASS | PASS | PARTIAL | PARTIAL | PASS |
-| Communities | 0 | 11 | 11 | 11 | 11 | 11 | 10-50 |
-| Flows | ~100 | 3,224 | 3,226 | 3,059 | 3,059 | 4,060 | lifecycle entries |
-| TESTED_BY edges | 0 | 6,140 | 7,384 | - | 7,409 | 7,409 | - |
-| Risk score range | all 0.5 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.50-0.70 | 0.0-1.0 | differentiated |
-| Resolution rate | - | - | - | 32.6% | 32.6% | **36.3%** | - |
-| Bare-name resolved | - | - | - | - | - | 5,625 | - |
+Class-level transitive TESTED_BY fixed the last PARTIAL: `get_transitive_tests("RecordedWorkoutSyncer")` now returns 41 indirect tests by expanding the class node to its methods via CONTAINS edges, following their CALLS chains, then collecting TESTED_BY on callees.
 
-### Gadgetbridge scorecard: 7/8 PASS, 1 PARTIAL (v10)
+### HealthAgent v12 notes
 
-v8 was 10/10 but tests_for(RecordedWorkoutSyncer) is now scored more accurately as PARTIAL: the graph has WorkoutSyncerUtils->WorkoutSyncerUtilsTest TESTED_BY edges, but tests_for doesn't traverse CALLS chains transitively. RecordedWorkoutSyncer CALLS WorkoutSyncerUtils which IS tested.
-
-### HealthAgent v10 key improvement: bare-name resolution
-
-Post-build `resolve_bare_call_targets()` resolved 2,294 previously-bare CALLS targets in HealthAgent by matching bare function names against the global node table and disambiguating via IMPORTS_FROM edges. This broke through the apparent tree-sitter ceiling at 28.6%, jumping to 45.6%. The remaining 54% are primarily stdlib/framework calls (LOG.info, Instant.ofEpochSecond, etc.) that have no local definition.
+- JSX handler tracking (`_walk_func_ref_args()` jsx_expression detection) added 126 edges but only 1 `handle*` CALLS edge. The HealthAgent frontend doesn't use `handleXxx` JSX patterns heavily. Fix is correct but low-impact for this project.
+- FP spot check regression (10/10 -> 8/10): `upsert_batch` and `safe_request` now show 0 callers. May be query methodology difference (v11 used MCP tool, v12 used raw SQL `target_qualified LIKE '%::name'`). Needs investigation.
+- Grep FP rate needs re-audit with tool's `find_dead_code()` output (not raw SQL).
 
 ---
 
@@ -267,7 +269,9 @@ The strategic recommendation is **Option B (Hybrid)** implemented incrementally:
 - Post-build bare-name resolution (`9038765`): batch-qualifies bare CALLS targets against node table, disambiguates via imports
 - JS/TS namespace imports, CommonJS require(), re-exports (`0aa4d38`)
 - Transitive TESTED_BY (`04327b6`): `get_transitive_tests()` follows CALLS->TESTED_BY chains for `tests_for` and risk scoring
-- Achieved **45.6% resolution** (HealthAgent), **36.3%** (Gadgetbridge)
+- JSX attribute function references: `_walk_func_ref_args()` detects identifiers inside `jsx_expression` nodes (e.g., `onClick={handleDelete}`)
+- Class-level transitive TESTED_BY: `get_transitive_tests()` expands class nodes to methods via CONTAINS edges before querying CALLS chains
+- Achieved **45.6% resolution** (v10 HealthAgent), **36.3%** (v10 Gadgetbridge), **10/10 scorecard** (v12 Gadgetbridge)
 
 ### Phase 1: Python enrichment via Jedi -- DONE
 - Jedi is pure Python, no subprocess needed
@@ -500,8 +504,10 @@ The upstream maintainer hasn't been responsive. Our 3 draft PRs (#104, #107, #10
 | 18 | Post-build bare-name CALLS resolution | **DONE** | `9038765` -- +2,294 resolved in HealthAgent |
 | 19 | JS/TS namespace imports, require(), re-exports | **DONE** | `0aa4d38` |
 | 20 | Transitive TESTED_BY (tests_for + risk scoring) | **DONE** | `04327b6` |
-| 21 | scip-java enrichment for Java/Kotlin | **OPEN** | |
-| 22 | TS Compiler API enrichment | **NOT WORTH DOING** | Resolution ceiling is external API calls |
+| 21 | JSX attribute function reference tracking | **DONE** | jsx_expression detection in _walk_func_ref_args |
+| 22 | Class-level transitive TESTED_BY | **DONE** | CONTAINS expansion in get_transitive_tests |
+| 23 | scip-java enrichment for Java/Kotlin | **OPEN** | |
+| 24 | TS Compiler API enrichment | **NOT WORTH DOING** | Resolution ceiling is external API calls |
 
 ### TDD xfail tracker (`tests/test_pain_points.py`)
 
@@ -519,7 +525,7 @@ Each xfail represents a concrete improvement target. Flip it to pass = the fix w
 | ~~`test_java_import_per_symbol`~~ (integration) | ~~Resolution~~ | ~~DONE (package-path fallback `a0ba7d2`)~~ |
 | ~~`test_kotlin_import_per_symbol`~~ (integration) | ~~Resolution~~ | ~~DONE (package-path fallback `a0ba7d2`)~~ |
 
-**9/9 resolved. 0 remaining xfails. 3 transitive TESTED_BY tests added.**
+**9/9 resolved. 0 remaining xfails. 6 additional tests added (3 transitive TESTED_BY, 2 JSX handlers, 1 class-level transitive).**
 
 ---
 
@@ -563,6 +569,9 @@ Track key decisions so we don't re-litigate them.
 | 2026-04-07 | Post-build bare-name CALLS resolution | Tree-sitter parser can't resolve cross-file calls at parse time. Batch post-build step matches bare names against node table, disambiguates via IMPORTS_FROM edges | +2,294 resolved in HealthAgent (28.6% -> 45.6%), +5,625 in Gadgetbridge (32.6% -> 36.3%) |
 | 2026-04-07 | Transitive TESTED_BY in tests_for and risk scoring | Direct TESTED_BY misses indirect coverage (A calls B, B is tested, A shows as untested). 1-hop CALLS->TESTED_BY transitive lookup with `indirect` flag | Fixes last Gadgetbridge scorecard PARTIAL (RecordedWorkoutSyncer) |
 | 2026-04-07 | TS/JS Tier 2 NOT WORTH DOING | Analyzed unresolved TS calls: 100% external API (Playwright, React, stdlib). Cross-file import tracing would resolve zero additional calls | Saved 4-6 weeks of Node.js subprocess work for zero impact |
+| 2026-04-07 | JSX attribute function references | `onClick={handleDelete}` uses jsx_expression node not in arg_list_types. Added jsx_expression scanning to _walk_func_ref_args() | Technically correct but low impact on HealthAgent (1 handle* edge). Will help React-heavy codebases |
+| 2026-04-07 | Class-level transitive TESTED_BY | get_transitive_tests() failed for class names because CALLS edges have method-level sources. Expanded class nodes to methods via CONTAINS edges | Fixed last Gadgetbridge PARTIAL: RecordedWorkoutSyncer returns 41 transitive tests |
+| 2026-04-07 | Grep FP root cause is NOT JSX handlers | v11 73% FP rate was attributed to JSX onClick handlers but actual cause is FastAPI/Pydantic/CLI endpoint functions without CALLS edges. Decorator metadata exists in extra but isn't used for dead code exclusion | Next priority: decorator-based exclusion in find_dead_code() |
 
 ---
 
