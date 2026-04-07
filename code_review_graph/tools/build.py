@@ -168,8 +168,8 @@ def _compute_summaries(store: Any) -> None:
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (cid, cname, purpose, key_syms, csize, clang or ""),
             )
-    except sqlite3.OperationalError:
-        pass  # Table may not exist yet
+    except sqlite3.OperationalError as e:
+        logger.info("Skipping community_summaries (table may not exist): %s", e)
 
     # -- flow_snapshots --
     try:
@@ -217,8 +217,8 @@ def _compute_summaries(store: Any) -> None:
                 (fid, fname, ep_name, _json.dumps(critical_path),
                  crit, ncount, fcount),
             )
-    except sqlite3.OperationalError:
-        pass
+    except sqlite3.OperationalError as e:
+        logger.info("Skipping flow_snapshots (table may not exist): %s", e)
 
     # -- risk_index --
     try:
@@ -266,8 +266,8 @@ def _compute_summaries(store: Any) -> None:
                 "VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
                 (nid, qn, risk, caller_count, coverage, sec_relevant),
             )
-    except sqlite3.OperationalError:
-        pass
+    except sqlite3.OperationalError as e:
+        logger.info("Skipping risk_index (table may not exist): %s", e)
 
     conn.commit()
 

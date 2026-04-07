@@ -242,6 +242,7 @@ class CodeParser:
         self._star_export_cache: dict[str, set[str]] = {}
         self._tsconfig_resolver = TsconfigResolver()
         self._handlers: dict[str, "BaseLanguageHandler"] = {}
+        self._type_sets_cache: dict[str, tuple] = {}
         self._register_handlers()
 
     def _register_handlers(self) -> None:
@@ -250,26 +251,33 @@ class CodeParser:
             self._handlers[handler.language] = handler
 
     def _type_sets(self, language: str):
+        cached = self._type_sets_cache.get(language)
+        if cached is not None:
+            return cached
         handler = self._handlers.get(language)
         if handler is not None:
-            return (
+            result = (
                 set(handler.class_types),
                 set(handler.function_types),
                 set(handler.import_types),
                 set(handler.call_types),
             )
-        return (
-            set(_CLASS_TYPES.get(language, [])),
-            set(_FUNCTION_TYPES.get(language, [])),
-            set(_IMPORT_TYPES.get(language, [])),
-            set(_CALL_TYPES.get(language, [])),
-        )
+        else:
+            result = (
+                set(_CLASS_TYPES.get(language, [])),
+                set(_FUNCTION_TYPES.get(language, [])),
+                set(_IMPORT_TYPES.get(language, [])),
+                set(_CALL_TYPES.get(language, [])),
+            )
+        self._type_sets_cache[language] = result
+        return result
 
     def _get_parser(self, language: str):  # type: ignore[arg-type]
         if language not in self._parsers:
             try:
                 self._parsers[language] = tslp.get_parser(language)  # type: ignore[arg-type]
             except Exception:
+                logger.warning("Failed to load tree-sitter parser for %s", language)
                 return None
         return self._parsers[language]
 
@@ -280,7 +288,8 @@ class CodeParser:
         """Parse a single file and return extracted nodes and edges."""
         try:
             source = path.read_bytes()
-        except (OSError, PermissionError):
+        except (OSError, PermissionError) as e:
+            logger.warning("Cannot read %s: %s", path, e)
             return [], []
         return self.parse_bytes(path, source)
 
@@ -593,7 +602,8 @@ class CodeParser:
         """Parse a Jupyter notebook by extracting code cells."""
         try:
             nb = json.loads(source)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.warning("Failed to parse notebook %s: %s", path, e)
             return [], []
 
         # Determine kernel language
@@ -3496,7 +3506,10 @@ class CodeParser:
 
         resolved = self._do_resolve_module(module, file_path, language)
         if len(self._module_file_cache) >= self._MODULE_CACHE_MAX:
-            self._module_file_cache.clear()
+            # Evict oldest half instead of clearing everything
+            keys = list(self._module_file_cache)
+            for k in keys[: len(keys) // 2]:
+                del self._module_file_cache[k]
         self._module_file_cache[cache_key] = resolved
         return resolved
 
@@ -3578,7 +3591,7 @@ class CodeParser:
                 )
                 if resolved:
                     return f"{resolved}::{call_name}"
-                return f"{import_map[cls_name]}::{method}"
+                return f"{import_map[cls_name]}::{call_name}"
         return call_name
 
     def _qualify(self, name: str, file_path: str, enclosing_class: Optional[str]) -> str:
