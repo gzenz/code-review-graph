@@ -159,6 +159,47 @@ _TEST_ANNOTATIONS = frozenset({
 _BUILTIN_NAMES: dict[str, frozenset[str]] = {
 }
 
+# Common JS/TS prototype and built-in method names that should NOT create
+# CALLS edges when seen as instance method calls (obj.method()).  These are
+# so ubiquitous that emitting bare-name edges for them creates noise without
+# helping dead-code or flow analysis.
+_INSTANCE_METHOD_BLOCKLIST: frozenset[str] = frozenset({
+    # Array / iterable
+    "push", "pop", "shift", "unshift", "splice", "slice", "concat",
+    "map", "filter", "reduce", "reduceRight", "find", "findIndex",
+    "forEach", "every", "some", "includes", "indexOf", "lastIndexOf",
+    "flat", "flatMap", "fill", "sort", "reverse", "join", "entries",
+    "keys", "values", "at", "with",
+    # Object / prototype
+    "toString", "valueOf", "toJSON", "hasOwnProperty", "toLocaleString",
+    # String
+    "trim", "trimStart", "trimEnd", "split", "replace", "replaceAll",
+    "match", "matchAll", "search", "startsWith", "endsWith", "padStart",
+    "padEnd", "repeat", "substring", "toLowerCase", "toUpperCase", "charAt",
+    "charCodeAt", "normalize", "localeCompare",
+    # Promise / async
+    "then", "catch", "finally",
+    # Map / Set
+    "get", "set", "has", "delete", "clear", "add", "size",
+    # EventEmitter / stream (very generic)
+    "emit", "pipe", "write", "end", "destroy", "pause", "resume",
+    # Logging / console
+    "log", "warn", "error", "info", "debug", "trace",
+    # DOM / common
+    "addEventListener", "removeEventListener", "querySelector",
+    "querySelectorAll", "getElementById", "setAttribute",
+    "getAttribute", "appendChild", "removeChild", "createElement",
+    "preventDefault", "stopPropagation",
+    # RxJS / Observable
+    "subscribe", "unsubscribe", "next", "complete",
+    # Common generic names (too ambiguous to resolve)
+    "call", "apply", "bind", "resolve", "reject",
+    # Python common builtins used as methods
+    "append", "extend", "insert", "remove", "update", "items",
+    "encode", "decode", "strip", "lstrip", "rstrip", "format",
+    "upper", "lower", "title", "count", "copy", "deepcopy",
+})
+
 
 def _is_test_file(path: str) -> bool:
     return any(p.search(path) for p in _TEST_FILE_PATTERNS)
@@ -2063,6 +2104,14 @@ class CodeParser:
                 text = sub.text.decode("utf-8", errors="replace")
                 decorators.append(text.lstrip("@").strip())
 
+        # TypeScript export_statement: decorators are siblings of the class
+        # inside an export_statement parent (e.g. `@Component(...) export class Foo`)
+        if not decorators and parent and parent.type == "export_statement":
+            for sibling in parent.children:
+                if sibling.type == "decorator":
+                    text = sibling.text.decode("utf-8", errors="replace")
+                    decorators.append(text.lstrip("@").strip())
+
         return decorators
 
     def _extract_classes(
@@ -3337,9 +3386,6 @@ class CodeParser:
 
         # Method call: obj.method(args)
         # Kotlin uses "navigation_expression" for member access (obj.method).
-        # Only emit CALLS for self/cls/this/super receivers -- external method
-        # calls (session.execute(), data.get()) are unresolvable without type
-        # inference and create noise in the call graph.
         member_types = (
             "attribute", "member_expression",
             "field_expression", "selector_expression",
@@ -3347,9 +3393,11 @@ class CodeParser:
         )
         if first.type in member_types:
             # In test files, allow all method calls (needed for TESTED_BY edges).
-            # In production code, only allow self/cls/this/super receivers
-            # and uppercase-initial receivers (static/companion object calls
-            # like ClassName.method() in Kotlin/Java/C#).
+            # In production code: self/cls/this/super and uppercase receivers
+            # get full resolution.  Other instance method calls (obj.method())
+            # emit bare method names that the post-process resolver can match,
+            # as long as the method name is not in the built-in blocklist.
+            is_instance_call = False
             if not is_test_file:
                 receiver = first.children[0] if first.children else None
                 if receiver is None:
@@ -3382,7 +3430,7 @@ class CodeParser:
                     and receiver_text in import_map
                 )
                 if not is_self_call and not is_class_call and not is_ns_import:
-                    return None
+                    is_instance_call = True
 
             # Get the rightmost identifier (the method name)
             # Kotlin navigation_expression uses navigation_suffix > simple_identifier.
@@ -3402,11 +3450,16 @@ class CodeParser:
                     "field_name", "simple_identifier",
                 ):
                     method = child.text.decode("utf-8", errors="replace")
+                    # For instance calls (obj.method()), skip built-in methods
+                    if is_instance_call and method in _INSTANCE_METHOD_BLOCKLIST:
+                        return None
                     return receiver_prefix + method if receiver_prefix else method
                 if child.type == "navigation_suffix":
                     for sub in child.children:
                         if sub.type == "simple_identifier":
                             method = sub.text.decode("utf-8", errors="replace")
+                            if is_instance_call and method in _INSTANCE_METHOD_BLOCKLIST:
+                                return None
                             return receiver_prefix + method if receiver_prefix else method
             return first.text.decode("utf-8", errors="replace")
 

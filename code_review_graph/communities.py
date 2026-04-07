@@ -634,7 +634,7 @@ def get_communities(
 
 
 _TEST_COMMUNITY_RE = re.compile(
-    r"(^test[-/]|[-/]test$|it:should|describe:|spec[-/]|[-/]spec$)",
+    r"(^test[-/]|[-/]test([:/]|$)|it:should|describe:|spec[-/]|[-/]spec$)",
     re.IGNORECASE,
 )
 

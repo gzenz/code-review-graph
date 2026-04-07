@@ -154,14 +154,16 @@ class TestCodeParser:
         assert any("helper" in c.target for c in calls)
 
     def test_method_call_filtering_python_external(self):
-        """obj.method() should NOT emit a CALLS edge (unresolvable)."""
+        """obj.method() emits bare CALLS for non-blocklisted methods."""
         _, edges = self.parser.parse_bytes(
             Path("/src/app.py"),
             b"def main():\n    response.json()\n    data.get('k')\n",
         )
         calls = [e for e in edges if e.kind == "CALLS"]
         targets = {c.target for c in calls}
-        assert "json" not in targets
+        # json is not blocklisted -> bare CALLS edge emitted
+        assert "json" in targets
+        # get is blocklisted -> no CALLS edge
         assert "get" not in targets
 
     def test_method_call_filtering_python_super(self):
@@ -184,14 +186,16 @@ class TestCodeParser:
         assert any("helper" in c.target for c in calls)
 
     def test_method_call_filtering_ts_external(self):
-        """obj.method() should NOT emit a CALLS edge in TS."""
+        """obj.method() emits bare CALLS for non-blocklisted methods in TS."""
         _, edges = self.parser.parse_bytes(
             Path("/src/app.ts"),
             b"function main() { response.json(); data.get('k'); }\n",
         )
         calls = [e for e in edges if e.kind == "CALLS"]
         targets = {c.target for c in calls}
-        assert "json" not in targets
+        # json is not blocklisted -> bare CALLS edge emitted
+        assert "json" in targets
+        # get is blocklisted -> no CALLS edge
         assert "get" not in targets
 
     def test_class_receiver_call_emits_edge(self):
@@ -205,16 +209,44 @@ class TestCodeParser:
         assert any("MyClass" in t and "create" in t for t in targets)
         assert any("Factory" in t and "build" in t for t in targets)
 
-    def test_lowercase_receiver_call_blocked(self):
-        """obj.method() should still be blocked for lowercase receivers."""
+    def test_lowercase_receiver_blocklisted_methods(self):
+        """Blocklisted methods (get, push, map, etc.) are still blocked."""
         _, edges = self.parser.parse_bytes(
             Path("/src/app.py"),
-            b"def main():\n    session.execute()\n    data.get('k')\n",
+            b"def main():\n    data.get('k')\n    items.push(1)\n    arr.map(fn)\n",
         )
         calls = [e for e in edges if e.kind == "CALLS"]
         targets = {c.target for c in calls}
-        assert "execute" not in targets
         assert "get" not in targets
+        assert "push" not in targets
+        assert "map" not in targets
+
+    def test_instance_method_call_emits_bare_name(self):
+        """Non-blocklisted instance method calls emit bare-name CALLS edges."""
+        _, edges = self.parser.parse_bytes(
+            Path("/src/app.ts"),
+            b"function main() { buffer.addChunk(data); svc.cleanup(); }\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {c.target for c in calls}
+        assert "addChunk" in targets
+        assert "cleanup" in targets
+
+    def test_ts_exported_class_decorator_extracted(self):
+        """@Injectable on an exported TS class should be extracted as decorator."""
+        nodes, _ = self.parser.parse_bytes(
+            Path("/src/guard.ts"),
+            b'@Injectable({ providedIn: "root" })\n'
+            b"export class ConsentGuard {\n"
+            b"  canActivate() { return true; }\n"
+            b"}\n",
+        )
+        class_nodes = [n for n in nodes if n.kind == "Class"]
+        assert len(class_nodes) == 1
+        decorators = class_nodes[0].extra.get("decorators", [])
+        assert any("Injectable" in d for d in decorators), (
+            f"Expected @Injectable decorator, got: {decorators}"
+        )
 
     def test_parse_nonexistent_file(self):
         nodes, edges = self.parser.parse_file(Path("/nonexistent/file.py"))
@@ -751,15 +783,18 @@ class PlainClass:
         targets = {c.target for c in calls}
         assert "fetch_data" in targets
 
-    def test_prod_file_filters_method_calls(self):
-        """Production files should filter external method calls."""
+    def test_prod_file_instance_method_calls(self):
+        """Production files emit bare-name CALLS for non-blocklisted instance methods."""
         _, edges = self.parser.parse_bytes(
             Path("/project/src/service.py"),
-            b"def main():\n    service.fetch_data()\n",
+            b"def main():\n    service.fetch_data()\n    items.append(x)\n",
         )
         calls = [e for e in edges if e.kind == "CALLS"]
         targets = {c.target for c in calls}
-        assert "fetch_data" not in targets
+        # fetch_data is not blocklisted -> bare CALLS emitted
+        assert "fetch_data" in targets
+        # append is blocklisted -> no CALLS
+        assert "append" not in targets
 
     # --- JS/TS namespace imports, require(), re-exports ---
 
