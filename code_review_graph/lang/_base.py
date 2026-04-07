@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..parser import CodeParser, EdgeInfo, NodeInfo
+
 
 class BaseLanguageHandler:
     """Override methods where a language differs from default CodeParser logic.
@@ -33,3 +38,25 @@ class BaseLanguageHandler:
     def resolve_module(self, module: str, caller_file: str) -> str | None:
         """Resolve a module path to a file path. Return NotImplemented to fall back."""
         return NotImplemented
+
+    def extract_constructs(
+        self,
+        child,
+        node_type: str,
+        parser: CodeParser,
+        source: bytes,
+        file_path: str,
+        nodes: list[NodeInfo],
+        edges: list[EdgeInfo],
+        enclosing_class: str | None,
+        enclosing_func: str | None,
+        import_map: dict[str, str] | None,
+        defined_names: set[str] | None,
+        depth: int,
+    ) -> bool:
+        """Handle language-specific AST constructs.
+
+        Returns True if the child was fully handled (skip generic dispatch).
+        Default: returns False (no language-specific handling).
+        """
+        return False
