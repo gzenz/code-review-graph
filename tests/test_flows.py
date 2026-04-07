@@ -168,6 +168,40 @@ class TestFlows:
     # trace_flows
     # ---------------------------------------------------------------
 
+    def test_detect_entry_points_excludes_tests_by_default(self):
+        """Test nodes are excluded from entry points by default."""
+        self._add_func("production_handler")
+        self._add_func("it:should do something", is_test=True)
+        self.store.commit()
+
+        eps = detect_entry_points(self.store)
+        ep_names = {ep.name for ep in eps}
+        assert "production_handler" in ep_names
+        assert "it:should do something" not in ep_names
+
+        # With include_tests=True, both appear
+        eps_all = detect_entry_points(self.store, include_tests=True)
+        ep_names_all = {ep.name for ep in eps_all}
+        assert "production_handler" in ep_names_all
+        assert "it:should do something" in ep_names_all
+
+    def test_detect_entry_points_excludes_test_files(self):
+        """Functions in test files (*.spec.ts, *.test.ts) are excluded by default."""
+        self._add_func("production_func", path="src/handler.ts")
+        self._add_func("describe_block", path="src/handler.spec.ts")
+        self._add_func("test_helper", path="tests/__tests__/utils.ts")
+
+        eps = detect_entry_points(self.store)
+        ep_files = {ep.file_path for ep in eps}
+        assert "src/handler.ts" in ep_files
+        assert "src/handler.spec.ts" not in ep_files
+        assert "tests/__tests__/utils.ts" not in ep_files
+
+        # With include_tests=True, they appear
+        eps_all = detect_entry_points(self.store, include_tests=True)
+        ep_files_all = {ep.file_path for ep in eps_all}
+        assert "src/handler.spec.ts" in ep_files_all
+
     def test_trace_simple_flow(self):
         """BFS traces a linear call chain: A -> B -> C."""
         self._add_func("entry")

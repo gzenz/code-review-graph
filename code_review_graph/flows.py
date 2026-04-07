@@ -82,6 +82,19 @@ _ENTRY_NAME_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"^do(Get|Post|Put|Delete)$"),
     # Express middleware signature
     re.compile(r"^(middleware|errorHandler)$"),
+    # Angular lifecycle hooks
+    re.compile(
+        r"^ng(OnInit|OnChanges|OnDestroy|DoCheck"
+        r"|AfterContentInit|AfterContentChecked|AfterViewInit|AfterViewChecked)$"
+    ),
+    # Angular Pipe / ControlValueAccessor / Guards / Resolvers
+    re.compile(r"^(transform|writeValue|registerOnChange|registerOnTouched|setDisabledState)$"),
+    re.compile(r"^(canActivate|canDeactivate|canActivateChild|canLoad|canMatch|resolve)$"),
+    # React class component lifecycle
+    re.compile(
+        r"^(componentDidMount|componentDidUpdate|componentWillUnmount"
+        r"|shouldComponentUpdate|render)$"
+    ),
 ]
 
 
@@ -112,13 +125,29 @@ def _matches_entry_name(node: GraphNode) -> bool:
     return False
 
 
-def detect_entry_points(store: GraphStore) -> list[GraphNode]:
+_TEST_FILE_RE = re.compile(
+    r"([\\/]__tests__[\\/]|\.spec\.[jt]sx?$|\.test\.[jt]sx?$|[\\/]test_[^/\\]*\.py$)",
+)
+
+
+def _is_test_file(file_path: str) -> bool:
+    """Return True if *file_path* looks like a test file."""
+    return bool(_TEST_FILE_RE.search(file_path))
+
+
+def detect_entry_points(
+    store: GraphStore,
+    include_tests: bool = False,
+) -> list[GraphNode]:
     """Find functions that are entry points in the graph.
 
     An entry point is a Function/Test node that either:
     1. Has no incoming CALLS edges (true root), or
     2. Has a framework decorator (e.g. ``@app.get``), or
     3. Matches a conventional name pattern (``main``, ``test_*``, etc.).
+
+    When *include_tests* is False (the default), Test nodes are excluded so
+    that flow analysis focuses on production entry points.
     """
     # Build a set of all qualified names that are CALLS targets.
     called_qnames = store.get_all_call_targets()
@@ -130,6 +159,9 @@ def detect_entry_points(store: GraphStore) -> list[GraphNode]:
     seen_qn: set[str] = set()
 
     for node in candidate_nodes:
+        if not include_tests and (node.is_test or _is_test_file(node.file_path)):
+            continue
+
         is_entry = False
 
         # True root: no one calls this function.
@@ -228,7 +260,11 @@ def _trace_single_flow(
     return flow
 
 
-def trace_flows(store: GraphStore, max_depth: int = 15) -> list[dict]:
+def trace_flows(
+    store: GraphStore,
+    max_depth: int = 15,
+    include_tests: bool = False,
+) -> list[dict]:
     """Trace execution flows from every entry point via forward BFS.
 
     Returns a list of flow dicts, each containing:
@@ -242,7 +278,7 @@ def trace_flows(store: GraphStore, max_depth: int = 15) -> list[dict]:
       - files: list of distinct file paths
       - criticality: computed criticality score (0.0-1.0)
     """
-    entry_points = detect_entry_points(store)
+    entry_points = detect_entry_points(store, include_tests=include_tests)
     flows: list[dict] = []
 
     for ep in entry_points:

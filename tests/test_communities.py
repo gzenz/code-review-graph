@@ -164,6 +164,50 @@ class TestCommunities:
         assert isinstance(overview["cross_community_edges"], list)
         assert isinstance(overview["warnings"], list)
 
+    def test_architecture_overview_excludes_tested_by_coupling(self):
+        """TESTED_BY edges do not count toward coupling warnings."""
+        self._seed_two_clusters()
+        communities = detect_communities(self.store, min_size=2)
+        store_communities(self.store, communities)
+
+        # Add many TESTED_BY cross-community edges (well above the threshold of 10)
+        for i in range(20):
+            self.store.upsert_edge(EdgeInfo(
+                kind="TESTED_BY", source=f"auth.py::login",
+                target=f"db.py::query", file_path="auth.py", line=i + 100,
+            ))
+        self.store.commit()
+
+        overview = get_architecture_overview(self.store)
+        # Warnings should not include any that are purely from TESTED_BY edges
+        for w in overview["warnings"]:
+            assert "TESTED_BY" not in w
+
+    def test_architecture_overview_excludes_test_community_warnings(self):
+        """Warnings involving test-dominated communities are filtered out."""
+        self._seed_two_clusters()
+        communities = detect_communities(self.store, min_size=2)
+        store_communities(self.store, communities)
+
+        # Manually insert a test-named community with high cross-coupling
+        conn = self.store._conn
+        cursor = conn.execute(
+            "INSERT INTO communities (name, level, cohesion, size, dominant_language, description)"
+            " VALUES (?, 0, 0.5, 10, 'typescript', 'Test community')",
+            ("handler-it:should",),
+        )
+        test_comm_id = cursor.lastrowid
+        # Assign some nodes to this community (reuse existing node)
+        conn.execute(
+            "UPDATE nodes SET community_id = ? WHERE name = 'login'",
+            (test_comm_id,),
+        )
+        conn.commit()
+
+        overview = get_architecture_overview(self.store)
+        for w in overview["warnings"]:
+            assert "it:should" not in w, f"Test community should be filtered: {w}"
+
     def test_fallback_file_communities(self):
         """File-based fallback produces communities grouped by file."""
         self._seed_two_clusters()

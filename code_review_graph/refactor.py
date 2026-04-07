@@ -29,6 +29,13 @@ _FRAMEWORK_BASE_CLASSES = frozenset({
     "db.Model", "TableBase",
 })
 
+# Patterns for mock/stub variables in test files that should not be flagged dead.
+_MOCK_NAME_RE = re.compile(
+    r"^(mock[A-Z_]|Mock[A-Z]|createMock[A-Z])|"  # mockDynamoClient, MockService, createMockX
+    r"(Mock|Stub|Fake|Spy)$",                      # s3ClientMock, dbStub
+    re.IGNORECASE,
+)
+
 # ---------------------------------------------------------------------------
 # Thread-safe pending refactors storage
 # ---------------------------------------------------------------------------
@@ -184,6 +191,16 @@ def _is_entry_point(node: Any) -> bool:
 
 # Matches identifiers inside type annotations (e.g. "GoalCreate" in
 # "body: GoalCreate", "Optional[UserResponse]", "list[Item]").
+_TEST_FILE_RE = re.compile(
+    r"([\\/]__tests__[\\/]|\.spec\.[jt]sx?$|\.test\.[jt]sx?$|[\\/]test_[^/\\]*\.py$)",
+)
+
+
+def _is_test_file(file_path: str) -> bool:
+    """Return True if *file_path* looks like a test file."""
+    return bool(_TEST_FILE_RE.search(file_path))
+
+
 _TYPE_IDENT_RE = re.compile(r"[A-Z][A-Za-z0-9_]*")
 
 
@@ -234,6 +251,25 @@ def find_dead_code(
         base = row[1].rsplit("::", 1)[-1] if "::" in row[1] else row[1]
         class_bases.setdefault(row[0], []).append(base)
 
+    # Build import graph: file_path -> set of file_paths it imports from.
+    # Used to filter bare-name caller matches to plausible callers.
+    importer_files: dict[str, set[str]] = {}
+    for row in conn.execute(
+        "SELECT file_path, target_qualified FROM edges WHERE kind = 'IMPORTS_FROM'"
+    ).fetchall():
+        importer_files.setdefault(row[0], set()).add(row[1])
+
+    def _is_plausible_caller(edge_file: str, node_file: str) -> bool:
+        """A bare-name edge is plausible if it comes from the same file
+        or from a file that has an IMPORTS_FROM edge whose target matches
+        the node's file path."""
+        if edge_file == node_file:
+            return True
+        for imp_target in importer_files.get(edge_file, ()):
+            if imp_target.startswith(node_file):
+                return True
+        return False
+
     dead: list[dict[str, Any]] = []
 
     for node in candidates:
@@ -246,12 +282,28 @@ def find_dead_code(
         if node.name.startswith("__") and node.name.endswith("__"):
             continue
 
+        # Skip JS/TS/Java constructors -- invoked via `new ClassName()`, which
+        # creates a CALLS edge to the class, not to `constructor`.
+        if node.name == "constructor" and node.parent_name:
+            continue
+
+        # Skip mock/stub variables in test files -- these are test helpers
+        # referenced via variable assignment, not function calls.
+        if node.is_test or _is_test_file(node.file_path):
+            if _MOCK_NAME_RE.search(node.name):
+                continue
+
         # Skip entry points (by name pattern or decorator, not just "uncalled").
         if _is_entry_point(node):
             continue
 
         # Skip classes referenced in type annotations (Pydantic schemas, etc.).
         if node.kind == "Class" and node.name in type_ref_names:
+            continue
+
+        # Skip Angular/NestJS decorated classes — they are framework-managed
+        # and instantiated by the DI container, not direct CALLS edges.
+        if node.kind == "Class" and _has_framework_decorator(node):
             continue
 
         # Skip classes inheriting from known framework bases (ORM models, etc.).
@@ -278,9 +330,11 @@ def find_dead_code(
         # unqualified target names (e.g. "run_agent" not "/path/agent.py::run_agent").
         if not any(e.kind == "CALLS" for e in incoming):
             bare = store.search_edges_by_target_name(node.name, kind="CALLS")
+            bare = [e for e in bare if _is_plausible_caller(e.file_path, node.file_path)]
             incoming = incoming + bare
         if not any(e.kind == "TESTED_BY" for e in incoming):
             bare_tb = store.search_edges_by_target_name(node.name, kind="TESTED_BY")
+            bare_tb = [e for e in bare_tb if _is_plausible_caller(e.file_path, node.file_path)]
             incoming = incoming + bare_tb
         # Check INHERITS -- classes with subclasses are not dead.
         if node.kind == "Class" and not any(e.kind == "INHERITS" for e in incoming):

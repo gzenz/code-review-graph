@@ -203,6 +203,34 @@ class TestFindDeadCode:
         dead_names = {d["name"] for d in dead}
         assert "__init__" not in dead_names
 
+    def test_find_dead_code_excludes_constructor(self):
+        """JS/TS constructors are not flagged as dead code."""
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="constructor", file_path="/repo/component.ts",
+            line_start=10, line_end=15, language="typescript",
+            parent_name="MyComponent",
+        ))
+        self.store.commit()
+        dead = find_dead_code(self.store)
+        dead_names = {d["name"] for d in dead}
+        assert "constructor" not in dead_names
+
+    def test_find_dead_code_excludes_angular_lifecycle(self):
+        """Angular lifecycle hooks are not flagged as dead code."""
+        for name in ("ngOnInit", "ngOnChanges", "ngOnDestroy", "transform",
+                     "writeValue", "canActivate"):
+            self.store.upsert_node(NodeInfo(
+                kind="Function", name=name, file_path="/repo/component.ts",
+                line_start=10, line_end=15, language="typescript",
+                parent_name="MyComponent",
+            ))
+        self.store.commit()
+        dead = find_dead_code(self.store)
+        dead_names = {d["name"] for d in dead}
+        for name in ("ngOnInit", "ngOnChanges", "ngOnDestroy", "transform",
+                     "writeValue", "canActivate"):
+            assert name not in dead_names, f"{name} should not be dead"
+
     def test_find_dead_code_excludes_decorated_entry(self):
         """Functions with framework decorators are not flagged as dead code."""
         self.store.upsert_node(NodeInfo(
@@ -321,6 +349,60 @@ class TestFindDeadCode:
         dead = find_dead_code(self.store)
         dead_names = {d["name"] for d in dead}
         assert "BaseConnector" not in dead_names
+
+    def test_find_dead_code_bare_name_not_tricked_by_unrelated_caller(self):
+        """Bare-name CALLS from unrelated files don't save a dead function."""
+        # Two unrelated functions named "handler" in different files
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="handler", file_path="/repo/api/routes.py",
+            line_start=10, line_end=20, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="handler", file_path="/repo/worker/tasks.py",
+            line_start=10, line_end=20, language="python",
+        ))
+        # A bare CALLS edge from a third file that imports only routes.py
+        self.store.upsert_edge(EdgeInfo(
+            kind="IMPORTS_FROM", source="/repo/main.py",
+            target="/repo/api/routes.py", file_path="/repo/main.py", line=1,
+        ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="/repo/main.py::start",
+            target="handler", file_path="/repo/main.py", line=10,
+        ))
+        self.store.commit()
+        dead = find_dead_code(self.store)
+        dead_qnames = {d["qualified_name"] for d in dead}
+        # routes.py handler is saved (caller imports its file)
+        assert "/repo/api/routes.py::handler" not in dead_qnames
+        # worker/tasks.py handler is dead (no relationship with caller)
+        assert "/repo/worker/tasks.py::handler" in dead_qnames
+
+    def test_find_dead_code_excludes_mock_variables(self):
+        """Mock/stub variables in test files are not flagged as dead code."""
+        for name in ("mockDynamoClient", "s3ClientMock", "MockService", "createMockRequest"):
+            self.store.upsert_node(NodeInfo(
+                kind="Function", name=name, file_path="/repo/tests/handler.spec.ts",
+                line_start=10, line_end=15, language="typescript",
+            ))
+        self.store.commit()
+        dead = find_dead_code(self.store)
+        dead_names = {d["name"] for d in dead}
+        for name in ("mockDynamoClient", "s3ClientMock", "MockService", "createMockRequest"):
+            assert name not in dead_names, f"{name} should not be dead (mock pattern)"
+
+    def test_find_dead_code_excludes_angular_decorated_class(self):
+        """Angular @Component classes are not flagged as dead code."""
+        self.store.upsert_node(NodeInfo(
+            kind="Class", name="ClipboardButtonComponent",
+            file_path="/repo/src/app/clipboard.component.ts",
+            line_start=5, line_end=50, language="typescript",
+            extra={"decorators": ["Component({selector: 'app-clipboard'})"]},
+        ))
+        self.store.commit()
+        dead = find_dead_code(self.store)
+        dead_names = {d["name"] for d in dead}
+        assert "ClipboardButtonComponent" not in dead_names
 
     def test_find_dead_code_excludes_property(self):
         """Functions decorated with @property are not dead code."""
