@@ -67,44 +67,56 @@ Rebuild the code-review-graph and analyze its quality. Run these steps in order:
 
 Produce a summary table comparing metrics against baselines:
 
-| Metric                 | v7 (first run) | Current |
-|------------------------|----------------|---------|
-| Total files            | 1,522          | ?       |
-| Total nodes            | 11,091         | ?       |
-| Total edges            | 79,877         | ?       |
-| CALLS                  | 38,301         | ?       |
-| TESTED_BY              | 21,305         | ?       |
-| IMPORTS_FROM           | 10,152         | ?       |
-| CONTAINS               | 9,568          | ?       |
-| INHERITS               | 54             | ?       |
-| Resolution rate        | 44.5%          | ?       |
-| Resolved CALLS         | 17,031         | ?       |
-| Decorator nodes        | 121            | ?       |
-| Dead code (total)      | 1,998          | ?       |
-| - packages/frontend    | 1,102          | ?       |
-| - packages/capabilities| 314            | ?       |
-| - packages/backend     | 106            | ?       |
-| - packages/voice       | 42 (est)       | ?       |
-| - libraries/*          | ~77            | ?       |
-| Top dead name: constructor | 416         | ?       |
-| FP spot check          | 7/10           | ?       |
-| Grep FP rate           | ~100%          | ?       |
-| Arch warnings (noise)  | 19/19          | ?       |
-| Top flows: test-only   | 14/15          | ?       |
+| Metric                 | v7 (first run) | v13 (2026-04-07) |
+|------------------------|----------------|------------------|
+| Total files            | 1,522          | 1,668            |
+| Total nodes            | 11,091         | 10,449           |
+| Total edges            | 79,877         | 82,885           |
+| CALLS                  | 38,301         | 41,689           |
+| TESTED_BY              | 21,305         | 21,305           |
+| IMPORTS_FROM           | 10,152         | 10,294           |
+| CONTAINS               | 9,568          | 8,785            |
+| INHERITS               | 54             | 54               |
+| Resolution rate        | 44.5%          | 38.4%            |
+| Resolved CALLS         | 17,031         | 16,029           |
+| Decorator nodes        | 121            | 355              |
+| Dead code (total)      | 1,998          | ~480             |
+| - packages/frontend    | 1,102          | 181              |
+| - packages/capabilities| 314            | 23               |
+| - packages/backend     | 106            | 107              |
+| - packages/voice       | 42 (est)       | 9                |
+| - libraries/*          | ~77            | 55               |
+| Top dead name: constructor | 416         | 0                |
+| FP spot check          | 7/10           | 0/8 dead         |
+| Grep FP rate           | ~100%          | ~73%             |
+| Arch warnings (noise)  | 19/19          | 2/2 real         |
+| Top flows: test-only   | 14/15          | 0/15             |
 
-### Known Issues (from v7 first run)
-- **constructor (416 FPs)**: JS/TS constructors flagged dead because `new X()` creates CALLS
-  to the class, not to `constructor`. Fixed: skip `constructor` with `parent_name`.
-- **Angular lifecycle hooks (~92 FPs)**: `ngOnInit`, `ngOnChanges`, `transform`, `canActivate`,
-  `writeValue` etc. are framework-invoked. Fixed: added to `_ENTRY_NAME_PATTERNS`.
-- **Bare-name collision**: 24 nodes named `handler`, 214 bare CALLS edges — every `handler`
-  was saved from dead code by unrelated callers. Fixed: filter by import relationship.
-- **Test flows dominate**: `it:should...` test descriptions are top-criticality flows.
-  Fixed: `detect_entry_points(include_tests=False)` by default.
-- **Architecture warnings all noise**: 19/19 warnings were test↔code TESTED_BY coupling.
-  Fixed: skip TESTED_BY in coupling count.
-- **Instance method calls not tracked**: `obj.method()` where obj is not `this`/`self`/`cls`
-  or ClassName is not tracked by the parser. Causes `cleanup`, `addChunk` FPs. NOT YET FIXED
-  (deeper parser issue).
+Note: resolution rate denominator grew because instance method tracking added ~3,400 new
+(mostly unresolved) CALLS edges. Absolute resolved count increased from 17,031 to 16,029
+is due to bundle exclusion removing marp-cli nodes. Dead code ~480 is after e2e-test exclusion.
+
+### Fixes applied (v7 → v13)
+- **constructor skip**: `new X()` → CALLS to class, skip `constructor` with `parent_name`
+- **Angular lifecycle hooks**: added to `_ENTRY_NAME_PATTERNS`
+- **Bare-name collision**: filter by import relationship + unique-name optimization
+- **Test flows**: `detect_entry_points(include_tests=False)` + test file path regex
+- **Arch warnings**: skip TESTED_BY in coupling + test community name filtering
+- **Instance method calls**: blocklist-based tracking (~120 common methods filtered)
+- **Angular template parsing**: regex extraction of (event), {{interp}}, [binding], @if/@for
+- **Constructor DI types**: `constructor(private svc: Type)` → `this.svc.method()` resolves
+- **Transitive imports**: 2-hop barrel file resolution for plausible caller check
+- **Function references**: `return funcName` and `const x = funcName` tracked
+- **Mock/stub exclusion**: regex pattern for mock variables in test files
+- **Framework decorator exclusion**: Angular @Component/@Injectable classes not dead
+- **Handler entry points**: `handler`, `handle`, `lambda_handler` patterns
+- **Bundled JS exclusion**: skip JS files >500KB + cdk.out/** ignore pattern
+- **E2e-test exclusion**: `/e2e[-_]?tests?/` directory pattern treated as test files
+- **Jedi**: moved to core dependency (helps Python-heavy projects, not cova specifically)
+
+### Remaining structural limits
+- **CDK/SAM wiring**: Lambda handlers referenced in IaC config, not code calls
+- **Angular template expressions**: complex bindings beyond regex capability
+- **Short common names**: ambiguous without type info (response, request, start)
 
 End with a prioritized list of remaining gaps and what specific fix each needs.
