@@ -3770,6 +3770,24 @@ class CodeParser:
                     and receiver_text in import_map
                 )
                 if not is_self_call and not is_class_call and not is_ns_import:
+                    # If receiver is a nested member expr (os.path.getsize),
+                    # check if leftmost identifier is an imported module.
+                    # If so, return None to let module-qualified handler resolve.
+                    if import_map and receiver.type in (
+                        "attribute", "member_expression",
+                    ):
+                        leftmost = receiver
+                        while leftmost.children and leftmost.type in (
+                            "attribute", "member_expression",
+                        ):
+                            leftmost = leftmost.children[0]
+                        if (
+                            leftmost.type in ("identifier", "simple_identifier")
+                            and leftmost.text.decode(
+                                "utf-8", errors="replace",
+                            ) in import_map
+                        ):
+                            return None
                     is_instance_call = True
 
             # Get the rightmost identifier (the method name)
