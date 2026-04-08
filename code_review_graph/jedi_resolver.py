@@ -69,7 +69,18 @@ def enrich_jedi_calls(store, repo_root: Path) -> dict:
     if not ts_parser:
         return {"resolved": 0, "files": 0}
 
+    # Build set of method names that actually exist in project code.
+    # No point asking Jedi to resolve `logger.getLogger()` if no project
+    # file defines a function called `getLogger`.
+    project_func_names = {
+        r["name"]
+        for r in store._conn.execute(
+            "SELECT DISTINCT name FROM nodes WHERE kind IN ('Function', 'Test')"
+        ).fetchall()
+    }
+
     files_with_pending: list[tuple[str, bytes, list]] = []
+    total_skipped = 0
     for file_path in py_files:
         try:
             source = Path(file_path).read_bytes()
@@ -79,12 +90,19 @@ def enrich_jedi_calls(store, repo_root: Path) -> dict:
         is_test = _parser_is_test_file(file_path)
         pending = _find_untracked_method_calls(tree.root_node, is_test)
         if pending:
-            files_with_pending.append((file_path, source, pending))
+            # Only keep calls whose method name exists in project code
+            filtered = [p for p in pending if p[2] in project_func_names]
+            total_skipped += len(pending) - len(filtered)
+            if filtered:
+                files_with_pending.append((file_path, source, filtered))
 
     if not files_with_pending:
         return {"resolved": 0, "files": 0}
 
-    logger.debug("Jedi: %d/%d Python files have pending calls", len(files_with_pending), len(py_files))
+    logger.debug(
+        "Jedi: %d/%d Python files have pending calls (%d calls skipped — no project target)",
+        len(files_with_pending), len(py_files), total_skipped,
+    )
 
     resolved_count = 0
     files_enriched = 0
