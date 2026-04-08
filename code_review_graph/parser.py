@@ -499,15 +499,24 @@ class CodeParser:
         return all_nodes, all_edges
 
     # Regex patterns for Angular template reference extraction
-    _ANGULAR_EVENT_RE = re.compile(r'\([\w.]+\)="(\w+)\(')
+    # Event bindings: (click)="method()" or (click)=method() or (@anim.done)="method()"
+    _ANGULAR_EVENT_RE = re.compile(r'\(@?[\w.]+\)=(?:")?(\w+)\(')
+    # Interpolation with call: {{method()}}
     _ANGULAR_INTERP_CALL_RE = re.compile(r'\{\{[^}]*?(\w+)\(')
-    _ANGULAR_BINDING_CALL_RE = re.compile(r'\[[\w.]+\]="[^"]*?(\w+)\(')
-    _ANGULAR_BINDING_PROP_RE = re.compile(r'\[[\w.]+\]="(\w+)"')
+    # Interpolation bare property: {{ property }} or {{ property | pipe }}
+    _ANGULAR_INTERP_PROP_RE = re.compile(r'\{\{\s*(\w+)\s*[|}]')
+    # Expression-level patterns: capture full expression for identifier extraction
+    _ANGULAR_BINDING_EXPR_RE = re.compile(r'\[[\w.]+\]="([^"]+)"')
+    _ANGULAR_STRUCTURAL_RE = re.compile(r'\*\w+="([^"]+)"')
     _ANGULAR_CONTROL_RE = re.compile(r'@(?:if|for|switch)\s*\(([^)]+)\)')
     _ANGULAR_TEMPLATE_KEYWORDS = frozenset({
         "true", "false", "null", "undefined", "let", "of", "as", "track",
         "index", "first", "last", "even", "odd", "count", "i", "item",
         "event", "$event", "this", "else", "then", "empty",
+        "async", "any", "length", "ngModel", "ngIf", "ngFor", "ngSwitch",
+        "matHeaderRowDef", "matRowDef", "matTreeNodeDef", "trackBy",
+        "translate", "number", "date", "json", "slice", "keyvalue",
+        "node", "class", "style", "when", "string", "boolean",
     })
 
     def _parse_angular_template(
@@ -516,10 +525,11 @@ class CodeParser:
         """Parse an Angular template (.component.html) using regex.
 
         Extracts method and property references from Angular template syntax:
-        - Event bindings: ``(click)="method()"``
-        - Interpolation: ``{{method()}}``
-        - Property bindings: ``[prop]="method()"`` or ``[prop]="property"``
-        - Control flow: ``@if (condition)``
+        - Event bindings: ``(click)="method()"``, ``(@anim.done)="method()"``
+        - Interpolation: ``{{method()}}``, ``{{ property }}``
+        - Property bindings: ``[prop]="expression"``
+        - Structural directives: ``*ngIf="expr"``, ``*matHeaderRowDef="cols"``
+        - Control flow: ``@if (condition)``, ``@for (item of items)``
         """
         file_path_str = str(path)
         # Only parse Angular component templates
@@ -539,61 +549,45 @@ class CodeParser:
         edges: list[EdgeInfo] = []
         seen: set[str] = set()
 
-        # Extract method/property references
+        def _add_edge(name: str, line: int) -> None:
+            if name in self._ANGULAR_TEMPLATE_KEYWORDS or name in seen:
+                return
+            seen.add(name)
+            edges.append(EdgeInfo(
+                kind="CALLS", source=file_path_str,
+                target=name, file_path=file_path_str, line=line,
+            ))
+
+        def _extract_expr_identifiers(expr: str, line: int) -> None:
+            """Extract method calls and bare identifiers from an expression."""
+            for call_m in re.finditer(r'(\w+)\(', expr):
+                _add_edge(call_m.group(1), line)
+            for ident_m in re.finditer(r'\b([a-zA-Z_]\w{2,})\b', expr):
+                name = ident_m.group(1)
+                if name[0].isupper():
+                    continue  # skip class names
+                _add_edge(name, line)
+
+        # Phase 1: single-identifier patterns (event bindings, interpolations)
         for pattern in (
             self._ANGULAR_EVENT_RE,
             self._ANGULAR_INTERP_CALL_RE,
-            self._ANGULAR_BINDING_CALL_RE,
-            self._ANGULAR_BINDING_PROP_RE,
+            self._ANGULAR_INTERP_PROP_RE,
         ):
             for m in pattern.finditer(text):
-                name = m.group(1)
-                if name in self._ANGULAR_TEMPLATE_KEYWORDS:
-                    continue
-                if name in seen:
-                    continue
-                seen.add(name)
-                line = text[:m.start()].count("\n") + 1
-                edges.append(EdgeInfo(
-                    kind="CALLS",
-                    source=file_path_str,
-                    target=name,
-                    file_path=file_path_str,
-                    line=line,
-                ))
+                _add_edge(m.group(1), text[:m.start()].count("\n") + 1)
 
-        # Extract identifiers from @if/@for/@switch control flow
-        for m in self._ANGULAR_CONTROL_RE.finditer(text):
-            expr = m.group(1)
-            # Extract method calls from control flow expressions
-            for call_m in re.finditer(r'(\w+)\(', expr):
-                name = call_m.group(1)
-                if name in self._ANGULAR_TEMPLATE_KEYWORDS or name in seen:
-                    continue
-                seen.add(name)
+        # Phase 2: expression-level patterns — capture full expression,
+        # then extract all identifiers (same approach for bindings,
+        # structural directives, and control flow).
+        for pattern in (
+            self._ANGULAR_BINDING_EXPR_RE,
+            self._ANGULAR_STRUCTURAL_RE,
+            self._ANGULAR_CONTROL_RE,
+        ):
+            for m in pattern.finditer(text):
                 line = text[:m.start()].count("\n") + 1
-                edges.append(EdgeInfo(
-                    kind="CALLS",
-                    source=file_path_str,
-                    target=name,
-                    file_path=file_path_str,
-                    line=line,
-                ))
-            # Extract standalone identifiers (properties)
-            for ident_m in re.finditer(r'\b([a-zA-Z_]\w+)\b', expr):
-                name = ident_m.group(1)
-                if (name in self._ANGULAR_TEMPLATE_KEYWORDS or name in seen
-                        or name[0].isupper()):
-                    continue
-                seen.add(name)
-                line = text[:m.start()].count("\n") + 1
-                edges.append(EdgeInfo(
-                    kind="CALLS",
-                    source=file_path_str,
-                    target=name,
-                    file_path=file_path_str,
-                    line=line,
-                ))
+                _extract_expr_identifiers(m.group(1), line)
 
         # Add IMPORTS_FROM edge to companion .component.ts if it exists
         companion_ts = Path(file_path_str.replace(".component.html", ".component.ts"))

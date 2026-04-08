@@ -396,6 +396,10 @@ def main() -> None:
     )
     detect_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
 
+    # embed
+    embed_cmd = sub.add_parser("embed", help="Compute vector embeddings for graph nodes")
+    embed_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+
     # enrich (PreToolUse hook -- reads hook JSON from stdin)
     sub.add_parser("enrich", help="Enrich search results with graph context (hook)")
 
@@ -416,6 +420,23 @@ def main() -> None:
     if args.command == "serve":
         from .main import main as serve_main
         serve_main(repo_root=args.repo)
+        return
+
+    if args.command == "embed":
+        from .incremental import find_repo_root
+        repo_root = Path(args.repo) if args.repo else find_repo_root()
+        if not repo_root:
+            repo_root = Path.cwd()
+        db_path = repo_root / ".code-review-graph" / "graph.db"
+        if not db_path.exists():
+            print("No graph database found. Run 'code-review-graph build' first.")
+            return
+        from .embeddings import EmbeddingStore, embed_all_nodes
+        from .graph import GraphStore
+        store = GraphStore(str(db_path))
+        emb_store = EmbeddingStore(str(db_path))
+        count = embed_all_nodes(store, emb_store)
+        print(f"Embedded {count} nodes.")
         return
 
     if args.command == "enrich":

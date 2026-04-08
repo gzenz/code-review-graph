@@ -946,6 +946,69 @@ class PlainClass:
         targets = {e.target for e in calls}
         assert "shouldShow" in targets
 
+    def test_angular_template_structural_directive(self):
+        """*ngIf="expr" should extract identifiers from the expression."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/app/comp.component.html"),
+            b'<div *ngIf="isConfigurable && pluginConfig">Content</div>\n',
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert "isConfigurable" in targets
+        assert "pluginConfig" in targets
+
+    def test_angular_template_structural_mat_directive(self):
+        """*matTreeNodeDef with 'when: hasChild' should extract hasChild."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/app/tree.component.html"),
+            b'<mat-nested-tree-node *matTreeNodeDef="let node; when: hasChild">'
+            b"</mat-nested-tree-node>\n",
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert "hasChild" in targets
+
+    def test_angular_template_interpolation_bare_property(self):
+        """{{ errorMessage }} should create a CALLS edge for the property."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/app/err.component.html"),
+            b'<span>{{ errorMessage }}</span>\n',
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert "errorMessage" in targets
+
+    def test_angular_template_animation_event(self):
+        """(@pulse.done)="onAnimationDone()" should create a CALLS edge."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/app/anim.component.html"),
+            b'<div (@pulse.done)="onAnimationDone()">Pulse</div>\n',
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert "onAnimationDone" in targets
+
+    def test_angular_template_binding_complex_expression(self):
+        """[prop]="!!(value$ | async)" should extract value identifiers."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/app/bind.component.html"),
+            b'<input [configurable]="!!(isConfigurable$ | async)">\n',
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        # isConfigurable$ gets the $ stripped by \w+ matching "isConfigurable"
+        assert "isConfigurable" in targets or "isConfigurable$" in targets
+
+    def test_angular_template_mat_header_row_def(self):
+        """*matHeaderRowDef="displayedColumns" should extract the identifier."""
+        nodes, edges = self.parser.parse_bytes(
+            Path("/app/table.component.html"),
+            b'<tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>\n',
+        )
+        calls = [e for e in edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert "displayedColumns" in targets
+
     def test_func_ref_return_statement(self):
         """return funcName should create a CALLS edge for the reference."""
         nodes, edges = self.parser.parse_bytes(

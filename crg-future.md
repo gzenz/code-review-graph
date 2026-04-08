@@ -1,6 +1,6 @@
 # code-review-graph: Strategic Analysis & Future Direction
 
-Last updated: 2026-04-08 (v16 -- thread safety, build perf: batch storage, phase timing, community 21x speedup)
+Last updated: 2026-04-08 (v17 -- workspace resolution, Angular template improvements, dead code FP reduction, VS Code extension fixes)
 
 ---
 
@@ -47,27 +47,37 @@ Last updated: 2026-04-08 (v16 -- thread safety, build perf: batch storage, phase
 
 ### Test suite
 
-820 tests passing, 4 skipped, 0 xfail. Includes:
+829 tests passing, 4 skipped, 0 xfail. Includes:
 - 53 TDD pain-point tests (`test_pain_points.py`)
 - 26 hardened tests (`test_hardened.py`) -- exact risk/flow scores, error paths, cache eviction
+
+### Cova (TypeScript/Python monorepo, 1,668 files)
+
+| Metric | v13 (2026-04-07) | v14 (2026-04-08) | Change |
+|---|---|---|---|
+| Total edges | 82,885 | **86,156** | +3,271 |
+| IMPORTS_FROM | 10,294 | **12,968** | +2,674 (workspace resolution) |
+| Resolution rate | 38.4% | **39.1%** | +0.7% |
+| Dead code | ~480 | **236** | -51% |
+| Grep FP rate | ~73% | **~50%** | -23pp |
 
 ### Recent commits (this session)
 
 | Commit | What |
 |---|---|
-| `242d521` | Silent failure logging, call resolution fix, cache eviction fix, type_sets cache, 26 hardened tests |
-| `135e49b` | Language handler migration -- parser.py 4,160 -> 3,149 lines, zero inline language checks in `_extract_from_tree` |
+| `dc9ed65` | Workspace package alias resolution, dead code FP reduction (CDK, decorators, plausible caller) |
+| `4891fa7` | Dead code FP reduction — decorators, CDK methods, abstract overrides, .d.ts, test-utils |
+| (pending) | Angular template improvements, VS Code extension fixes, `embed` CLI subcommand |
 
 ---
 
 ## 2. Open Work
 
-### HIGH: VS Code extension ships broken commands
+### ~~HIGH: VS Code extension ships broken commands~~ DONE (v17)
 
-- `cli.ts:99` calls `code-review-graph embed` -- no `embed` subcommand in `cli.py`
-- `cli.ts:63` passes `--full` flag for `buildGraph` -- `cli.py` `build` command doesn't accept `--full`
-- "Compute Embeddings" command silently fails for every VS Code user
-- **Fix**: Either add the missing CLI subcommands, or fix the VS Code extension to call what exists
+- ~~`cli.ts:99` calls `code-review-graph embed` -- no `embed` subcommand in `cli.py`~~ Added `embed` CLI subcommand
+- ~~`cli.ts:63` passes `--full` flag for `buildGraph` -- `cli.py` `build` command doesn't accept `--full`~~ Removed invalid `--full` flag
+- ~~"Compute Embeddings" command silently fails for every VS Code user~~ Fixed
 
 ### MEDIUM: Thread safety is aspirational
 
@@ -102,7 +112,9 @@ Changes made:
 
 Remaining opportunity: `trace_flows()` at 5.5s is now the largest postprocess phase.
 
-### MEDIUM: Remaining dead code FP sources (~40% grep FP rate)
+### MEDIUM: Remaining dead code FP sources (~50% grep FP rate)
+
+**HealthAgent** (~40% FP rate):
 
 | FP category | Count | Root cause | Potential fix |
 |---|---|---|---|
@@ -111,14 +123,24 @@ Remaining opportunity: `trace_flows()` at 5.5s is now the largest postprocess ph
 | Instance method resolution | 1 | `settings.validate_startup()` -- lowercase instance vs `Settings` class | Rewrite during bare-name resolution |
 | UI component library re-exports | ~74 | shadcn/ui components exported but never imported | `--exclude-exports` flag or UI library heuristic |
 
+**Cova** (~50% FP rate, 236 dead total):
+
+| FP category | Count | Root cause | Potential fix |
+|---|---|---|---|
+| Angular template expressions | ~13 | Complex bindings regex can't parse | Angular compiler API (weeks of work) |
+| Cross-file TS imports | ~20 | IMPORTS_FROM edges missing for intra-package imports | Better TS module resolution |
+| Short/common names | ~10 | `response`, `accessToken`, `reference` -- inherently ambiguous | Name length/frequency filter |
+| Cross-file Python imports | ~5 | Functions in `shared/` dirs imported via `__init__.py` re-exports | Improved (still gaps) |
+| Non-abstract method overrides | ~5 | Base class methods overridden in subclasses | INHERITS-based override detection |
+
 ### Summary table
 
 | Issue | Severity | Status |
 |---|---|---|
-| VS Code extension | HIGH | OPEN |
+| ~~VS Code extension~~ | ~~HIGH~~ | **DONE** (v17) -- `embed` CLI added, `--full` flag removed |
 | ~~Thread safety~~ | ~~MEDIUM~~ | **DONE** (v16) |
 | ~~Build performance~~ | ~~MEDIUM~~ | **DONE** (v16) -- 48.6s -> 2.3s communities, 3x overall |
-| Dead code FP rate (~40%) | MEDIUM | OPEN -- root causes identified |
+| Dead code FP rate (~50%) | MEDIUM | IMPROVED -- 252 -> 236 dead on cova, structural limits remain |
 | scip-java for Java/Kotlin | LOW | DEPRIORITIZED -- ROI unclear vs 2-4 week effort |
 
 ---
@@ -239,7 +261,7 @@ Tree-sitter for structure + per-language enrichers for resolution:
 | Call resolution fallback | MEDIUM | **DONE** (`242d521`) |
 | Cache eviction (evict-oldest-half) | LOW | **DONE** (`242d521`) |
 
-### Fork priorities (27 items, 25 DONE)
+### Fork priorities (27 items, 26 DONE)
 
 | # | Work | Status |
 |---|---|---|
@@ -250,8 +272,8 @@ Tree-sitter for structure + per-language enrichers for resolution:
 | 3c | Weighted flow criticality | **DONE** (`48c38dd`) |
 | 4 | Parser refactoring into LanguageHandler strategy | **DONE** (`135e49b`) |
 | 5 | DRY TESTED_BY generation | **DONE** (`d226689`) |
-| 6 | VS Code extension fixes | **OPEN** |
-| 7 | TDD test suite | **DONE** (820 tests) |
+| 6 | VS Code extension fixes | **DONE** (v17) |
+| 7 | TDD test suite | **DONE** (829 tests) |
 | 8 | Typed variable call enrichment | **DONE** (`19d5e15`, `30c8c0e`) |
 | 8b | Constructor-based type inference | **DONE** (`ef495b3`) |
 | 9 | JVM per-symbol imports | **DONE** (`a0ba7d2`) |
