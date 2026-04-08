@@ -495,7 +495,8 @@ def find_dead_code(
         has_subclasses = any(e.kind == "INHERITS" for e in incoming)
 
         # For classes with no direct references, check if any member has callers.
-        if node.kind == "Class" and not (has_callers or has_test_refs or has_importers or has_subclasses):
+        no_refs = not (has_callers or has_test_refs or has_importers or has_subclasses)
+        if node.kind == "Class" and no_refs:
             member_prefix = node.qualified_name + "."
             # Also check bare class-name pattern (unresolved CALLS targets)
             bare_prefix = node.name + "."
