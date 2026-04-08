@@ -29,13 +29,13 @@ _FRAMEWORK_BASE_CLASSES = frozenset({
     "Base", "DeclarativeBase", "Model", "BaseModel", "BaseSettings",
     "db.Model", "TableBase",
     # AWS CDK constructs -- instantiated by CDK app wiring, not explicit CALLS.
-    "Stack", "NestedStack", "Construct",
+    "Stack", "NestedStack", "Construct", "Resource",
 })
 
 # Class name suffixes that indicate CDK/IaC constructs.
 # These are instantiated by framework wiring, not direct CALLS edges.
 # Used as fallback when INHERITS edges to external base classes are absent.
-_CDK_CLASS_SUFFIXES = ("Stack", "Construct", "Pipeline", "Resources")
+_CDK_CLASS_SUFFIXES = ("Stack", "Construct", "Pipeline", "Resources", "Layer")
 
 # Patterns for mock/stub variables in test files that should not be flagged dead.
 _MOCK_NAME_RE = re.compile(
@@ -201,7 +201,7 @@ def _is_entry_point(node: Any) -> bool:
 # "body: GoalCreate", "Optional[UserResponse]", "list[Item]").
 _TEST_FILE_RE = re.compile(
     r"([\\/]__tests__[\\/]|\.spec\.[jt]sx?$|\.test\.[jt]sx?$|[\\/]test_[^/\\]*\.py$"
-    r"|[\\/]e2e[_-]?tests?[\\/])",
+    r"|[\\/]e2e[_-]?tests?[\\/]|[\\/]test[_-]utils?[\\/])",
 )
 
 
@@ -305,11 +305,20 @@ def find_dead_code(
         for imp_target in importer_files.get(edge_file, ()):
             # Strip "::name" suffix — workspace-resolved imports may include it
             imp_path = imp_target.split("::")[0] if "::" in imp_target else imp_target
+            # __init__.py represents its parent package directory
+            if imp_path.endswith("/__init__.py"):
+                imp_dir = imp_path[:-12]  # strip "/__init__.py"
+                if node_file.startswith(imp_dir + "/"):
+                    return True
             if imp_path.startswith(node_file) or node_file.startswith(imp_path + "/"):
                 return True
             # 2-hop: edge_file imports X, X re-exports from node_file (barrel files)
             for imp2 in importer_files.get(imp_target, ()):
                 imp2_path = imp2.split("::")[0] if "::" in imp2 else imp2
+                if imp2_path.endswith("/__init__.py"):
+                    imp2_dir = imp2_path[:-12]
+                    if node_file.startswith(imp2_dir + "/"):
+                        return True
                 if imp2_path.startswith(node_file) or node_file.startswith(imp2_path + "/"):
                     return True
             # Package-alias heuristic: monorepo imports like "@scope/pkg-name"
@@ -330,6 +339,10 @@ def find_dead_code(
 
         # Skip test nodes and anything defined in test files.
         if node.is_test or _is_test_file(node.file_path):
+            continue
+
+        # Skip ambient type declarations (.d.ts) — they describe external APIs.
+        if node.file_path.endswith(".d.ts"):
             continue
 
         # Skip dunder methods -- invoked by runtime, never have explicit callers.
@@ -360,26 +373,85 @@ def find_dead_code(
         if node.kind == "Class" and _has_framework_decorator(node):
             continue
 
-        # Skip classes inheriting from known framework bases (ORM models, etc.).
-        if node.kind == "Class":
-            outgoing = store.get_edges_by_source(node.qualified_name)
+        # Skip classes (and their methods) inheriting from known framework bases.
+        _is_framework_class = False
+        _check_qn = node.qualified_name if node.kind == "Class" else (
+            node.qualified_name.rsplit(".", 1)[0] if node.parent_name else None
+        )
+        if _check_qn:
+            outgoing = store.get_edges_by_source(_check_qn)
             base_names = {
                 e.target_qualified.rsplit("::", 1)[-1]
                 for e in outgoing if e.kind == "INHERITS"
             }
             if base_names & _FRAMEWORK_BASE_CLASSES:
+                _is_framework_class = True
+        if node.kind == "Class":
+            if _is_framework_class:
                 continue
             # Fallback: CDK class name suffixes (no INHERITS edge for external bases)
             if any(node.name.endswith(s) for s in _CDK_CLASS_SUFFIXES):
                 continue
+        if node.kind == "Function" and _is_framework_class:
+            continue
+        # Also skip methods whose parent class name matches CDK suffixes
+        # (fallback for external base classes without INHERITS edges).
+        if (
+            node.kind == "Function"
+            and node.parent_name
+            and any(node.parent_name.endswith(s) for s in _CDK_CLASS_SUFFIXES)
+        ):
+            continue
 
-        # Skip @property-decorated functions -- invoked via attribute access,
-        # not function calls, so they'll never have CALLS edges.
-        if node.kind in ("Function", "Test"):
-            decorators = node.extra.get("decorators", ())
-            if isinstance(decorators, (list, tuple)):
-                if any("property" in d for d in decorators):
+        # Skip decorated functions/classes that are invoked implicitly rather
+        # than via explicit CALLS edges.
+        decorators = node.extra.get("decorators", ())
+        if isinstance(decorators, (list, tuple)) and decorators:
+            if node.kind in ("Function", "Test"):
+                # @property — invoked via attribute access
+                # @abstractmethod — polymorphic dispatch, never called directly
+                # @classmethod/@staticmethod — called via Class.method()
+                if any(
+                    d in ("property", "abstractmethod", "classmethod", "staticmethod")
+                    or d.endswith(".abstractmethod")
+                    # Angular @HostListener — method called by framework event system
+                    or d.startswith("HostListener")
+                    for d in decorators
+                ):
                     continue
+            if node.kind == "Class":
+                # @dataclass classes are instantiated as types, not via CALLS
+                if any("dataclass" in d for d in decorators):
+                    continue
+
+        # Skip methods that override an @abstractmethod in a base class —
+        # they are called polymorphically via the base class reference.
+        if node.kind == "Function" and node.parent_name:
+            parent_qn = node.qualified_name.rsplit(".", 1)[0]
+            parent_edges = store.get_edges_by_source(parent_qn)
+            base_class_names = [
+                e.target_qualified for e in parent_edges if e.kind == "INHERITS"
+            ]
+            for base_name in base_class_names:
+                # Try fully-qualified base first, then bare name match
+                base_method_qn = f"{base_name}.{node.name}"
+                base_nodes = store.get_node(base_method_qn)
+                if base_nodes is None:
+                    # Base class may be bare name — search in same file
+                    base_method_qn2 = (
+                        node.file_path + "::" + base_name + "." + node.name
+                    )
+                    base_nodes = store.get_node(base_method_qn2)
+                if base_nodes is not None:
+                    base_decos = base_nodes.extra.get("decorators", ())
+                    if isinstance(base_decos, (list, tuple)) and any(
+                        "abstractmethod" in d for d in base_decos
+                    ):
+                        break
+            else:
+                base_name = None  # no abstract override found
+            if base_name is not None:
+                continue
 
         # Check for callers (CALLS), test refs (TESTED_BY), importers (IMPORTS_FROM).
         incoming = store.get_edges_by_target(node.qualified_name)
@@ -425,10 +497,12 @@ def find_dead_code(
         # For classes with no direct references, check if any member has callers.
         if node.kind == "Class" and not (has_callers or has_test_refs or has_importers or has_subclasses):
             member_prefix = node.qualified_name + "."
+            # Also check bare class-name pattern (unresolved CALLS targets)
+            bare_prefix = node.name + "."
             member_calls = conn.execute(
                 "SELECT COUNT(*) FROM edges WHERE kind = 'CALLS'"
-                " AND target_qualified LIKE ?",
-                (f"%{member_prefix}%",),
+                " AND (target_qualified LIKE ? OR target_qualified LIKE ?)",
+                (f"%{member_prefix}%", f"%{bare_prefix}%"),
             ).fetchone()[0]
             if member_calls > 0:
                 has_callers = True

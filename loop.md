@@ -67,34 +67,48 @@ Rebuild the code-review-graph and analyze its quality. Run these steps in order:
 
 Produce a summary table comparing metrics against baselines:
 
-| Metric                 | v7 (first run) | v13 (2026-04-07) |
-|------------------------|----------------|------------------|
-| Total files            | 1,522          | 1,668            |
-| Total nodes            | 11,091         | 10,449           |
-| Total edges            | 79,877         | 82,885           |
-| CALLS                  | 38,301         | 41,689           |
-| TESTED_BY              | 21,305         | 21,305           |
-| IMPORTS_FROM           | 10,152         | 10,294           |
-| CONTAINS               | 9,568          | 8,785            |
-| INHERITS               | 54             | 54               |
-| Resolution rate        | 44.5%          | 38.4%            |
-| Resolved CALLS         | 17,031         | 16,029           |
-| Decorator nodes        | 121            | 355              |
-| Dead code (total)      | 1,998          | ~480             |
-| - packages/frontend    | 1,102          | 181              |
-| - packages/capabilities| 314            | 23               |
-| - packages/backend     | 106            | 107              |
-| - packages/voice       | 42 (est)       | 9                |
-| - libraries/*          | ~77            | 55               |
-| Top dead name: constructor | 416         | 0                |
-| FP spot check          | 7/10           | 0/8 dead         |
-| Grep FP rate           | ~100%          | ~73%             |
-| Arch warnings (noise)  | 19/19          | 2/2 real         |
-| Top flows: test-only   | 14/15          | 0/15             |
+| Metric                 | v7 (first run) | v13 (2026-04-07) | v14 (2026-04-08) |
+|------------------------|----------------|------------------|------------------|
+| Total files            | 1,522          | 1,668            | 1,668            |
+| Total nodes            | 11,091         | 10,449           | 10,464           |
+| Total edges            | 79,877         | 82,885           | 85,700           |
+| CALLS                  | 38,301         | 41,689           | 41,766           |
+| TESTED_BY              | 21,305         | 21,305           | 21,352           |
+| IMPORTS_FROM           | 10,152         | 10,294           | 12,968           |
+| CONTAINS               | 9,568          | 8,785            | 8,800            |
+| INHERITS               | 54             | 54               | 54               |
+| Resolution rate        | 44.5%          | 38.4%            | 39.1%            |
+| Resolved CALLS         | 17,031         | 16,029           | 16,336           |
+| Decorator nodes        | 121            | 355              | 355              |
+| Dead code (total)      | 1,998          | ~480             | 252              |
+| - packages/frontend    | 1,102          | 181              | 128              |
+| - packages/capabilities| 314            | 23               | 10               |
+| - packages/backend     | 106            | 107              | 38               |
+| - packages/voice       | 42 (est)       | 9                | 9                |
+| - libraries/*          | ~77            | 55               | 18               |
+| Top dead name: constructor | 416         | 0                | 0                |
+| FP spot check          | 7/10           | 0/8 dead         | —                |
+| Grep FP rate           | ~100%          | ~73%             | ~50%             |
+| Arch warnings (noise)  | 19/19          | 2/2 real         | —                |
+| Top flows: test-only   | 14/15          | 0/15             | —                |
 
 Note: resolution rate denominator grew because instance method tracking added ~3,400 new
 (mostly unresolved) CALLS edges. Absolute resolved count increased from 17,031 to 16,029
 is due to bundle exclusion removing marp-cli nodes. Dead code ~480 is after e2e-test exclusion.
+
+### v13 → v14 changes
+- **Grep FP rate**: ~73% → ~50% (properly measured with `--exclude-dir=cdk.out,.nx,test-reports,.venv`)
+- **Workspace package resolution**: IMPORTS_FROM 10,294 → 12,968 (+2,674 edges), resolution rate 38.4% → 39.1%
+- **Dead code**: ~480 → 252 (47% reduction). Key drivers:
+  - Workspace alias resolution (+2,674 IMPORTS_FROM edges for monorepo packages)
+  - CDK construct class + method exclusion (Resource base, Layer/Stack/Construct suffixes)
+  - Abstract method override detection (polymorphic dispatch)
+  - Decorator exclusions (@abstractmethod, @dataclass, @classmethod, @staticmethod, @HostListener)
+  - .d.ts ambient type declaration exclusion
+  - test-utils/ directory exclusion
+  - __init__.py package directory matching in plausible caller
+  - Class member caller check with bare-name pattern matching
+  - Partially-qualified CALLS suffix search
 
 ### Fixes applied (v7 → v13)
 - **constructor skip**: `new X()` → CALLS to class, skip `constructor` with `parent_name`
@@ -114,9 +128,23 @@ is due to bundle exclusion removing marp-cli nodes. Dead code ~480 is after e2e-
 - **E2e-test exclusion**: `/e2e[-_]?tests?/` directory pattern treated as test files
 - **Jedi**: moved to core dependency (helps Python-heavy projects, not cova specifically)
 
+### Fixes applied (v13 → v14)
+- **Workspace package resolution**: npm workspace `package.json` → directory mapping for monorepo imports
+- **CDK construct exclusion**: Resource base class + Layer/Stack/Construct suffix for classes AND methods
+- **Abstract method override detection**: skip methods overriding @abstractmethod in base class
+- **Decorator exclusions**: @abstractmethod, @dataclass, @classmethod, @staticmethod, @HostListener
+- **Ambient type declarations**: skip .d.ts files entirely
+- **test-utils/ exclusion**: treat test-utils/ directories as test files
+- **__init__.py package matching**: Python package imports via __init__.py match files in package dir
+- **Class member bare-name check**: unresolved CALLS to `ClassName.method` patterns
+- **Partially-qualified CALLS**: suffix LIKE search for `::funcName` patterns
+- **Package-alias heuristic**: directory segment matching for unresolved monorepo imports
+
 ### Remaining structural limits
 - **CDK/SAM wiring**: Lambda handlers referenced in IaC config, not code calls
-- **Angular template expressions**: complex bindings beyond regex capability
-- **Short common names**: ambiguous without type info (response, request, start)
+- **Angular template expressions**: complex bindings beyond regex capability (~50% of frontend FPs)
+- **Short common names**: ambiguous without type info (response, accessToken, reference)
+- **Cross-file TS imports without IMPORTS_FROM**: some intra-package imports not tracked
+- **Method override without @abstractmethod**: base class methods overridden in subclasses
 
 End with a prioritized list of remaining gaps and what specific fix each needs.
