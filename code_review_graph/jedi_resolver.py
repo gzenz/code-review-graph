@@ -12,6 +12,7 @@ resulting CALLS edges to the graph database.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -39,46 +40,63 @@ def enrich_jedi_calls(store, repo_root: Path) -> dict:
         return {"skipped": True, "reason": "jedi not installed"}
 
     repo_root = Path(repo_root).resolve()
-    project = jedi.Project(path=str(repo_root))
 
-    # Get Python files from the graph
+    # Get Python files from the graph — skip early if none
     all_files = store.get_all_files()
     py_files = [f for f in all_files if f.endswith(".py")]
 
     if not py_files:
         return {"resolved": 0, "files": 0}
 
-    # Build set of already-tracked (source_qualified, line) pairs per file
-    # to avoid duplicate edges
-    parser = CodeParser()
-    resolved_count = 0
-    files_enriched = 0
-    errors = 0
+    # Scope the Jedi project to Python-only directories to avoid scanning
+    # non-Python files (e.g. node_modules, TS sources).  This matters for
+    # polyglot monorepos where jedi.Project(path=repo_root) would scan
+    # thousands of irrelevant files during initialization.
+    py_dirs = sorted({str(Path(f).parent) for f in py_files})
+    common_py_root = Path(os.path.commonpath(py_dirs)) if py_dirs else repo_root
+    if not str(common_py_root).startswith(str(repo_root)):
+        common_py_root = repo_root
+    project = jedi.Project(
+        path=str(common_py_root),
+        added_sys_path=[str(repo_root)],
+        smart_sys_path=False,
+    )
 
+    # Pre-parse all Python files to find which ones have pending method calls.
+    # This avoids expensive Jedi Script creation for files with nothing to resolve.
+    parser = CodeParser()
+    ts_parser = parser._get_parser("python")
+    if not ts_parser:
+        return {"resolved": 0, "files": 0}
+
+    files_with_pending: list[tuple[str, bytes, list]] = []
     for file_path in py_files:
         try:
             source = Path(file_path).read_bytes()
         except (OSError, PermissionError):
             continue
+        tree = ts_parser.parse(source)
+        is_test = _parser_is_test_file(file_path)
+        pending = _find_untracked_method_calls(tree.root_node, is_test)
+        if pending:
+            files_with_pending.append((file_path, source, pending))
 
+    if not files_with_pending:
+        return {"resolved": 0, "files": 0}
+
+    logger.debug("Jedi: %d/%d Python files have pending calls", len(files_with_pending), len(py_files))
+
+    resolved_count = 0
+    files_enriched = 0
+    errors = 0
+
+    for file_path, source, pending in files_with_pending:
         source_text = source.decode("utf-8", errors="replace")
 
         # Get existing CALLS edges for this file to skip duplicates
         existing = set()
         for edge in _get_file_call_edges(store, file_path):
             existing.add((edge.source_qualified, edge.line))
-
-        # Parse with tree-sitter to find dropped method calls
-        ts_parser = parser._get_parser("python")
-        if not ts_parser:
-            continue
-        tree = ts_parser.parse(source)
-
-        is_test = _parser_is_test_file(file_path)
-        pending = _find_untracked_method_calls(tree.root_node, is_test)
-
-        if not pending:
-            continue
 
         # Get function nodes from DB for enclosing-function lookup
         func_nodes = [
