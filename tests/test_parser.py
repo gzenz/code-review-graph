@@ -980,3 +980,59 @@ class PlainClass:
         calls = [e for e in edges if e.kind == "CALLS"]
         targets = {e.target for e in calls}
         assert "AuthService::authenticate" in targets
+
+
+class TestWorkspaceResolution:
+    """Test npm workspace package alias → directory resolution."""
+
+    def test_workspace_package_import_resolves(self, tmp_path):
+        """Import from a workspace package should resolve to the package dir."""
+        # Set up monorepo structure
+        root_pkg = tmp_path / "package.json"
+        root_pkg.write_text('{"workspaces": ["packages/*"]}')
+
+        pkg_a = tmp_path / "packages" / "pkg-a"
+        pkg_a.mkdir(parents=True)
+        (pkg_a / "package.json").write_text('{"name": "@myorg/pkg-a"}')
+        (pkg_a / "index.ts").write_text("export function hello() {}")
+
+        pkg_b = tmp_path / "packages" / "pkg-b"
+        pkg_b.mkdir(parents=True)
+        (pkg_b / "package.json").write_text('{"name": "@myorg/pkg-b"}')
+        caller = pkg_b / "main.ts"
+        caller.write_text('import { hello } from "@myorg/pkg-a";')
+
+        parser = CodeParser()
+        nodes, edges = parser.parse_file(caller)
+        imports = [e for e in edges if e.kind == "IMPORTS_FROM"]
+        targets = {e.target for e in imports}
+        # Should resolve to the pkg-a directory, not the raw alias
+        assert any(str(pkg_a.resolve()) in t for t in targets), (
+            f"Expected pkg-a path in targets, got: {targets}"
+        )
+
+    def test_workspace_subpath_import(self, tmp_path):
+        """Import of @scope/pkg/sub/path should resolve to file in pkg."""
+        root_pkg = tmp_path / "package.json"
+        root_pkg.write_text('{"workspaces": ["libs/*"]}')
+
+        lib = tmp_path / "libs" / "common"
+        lib.mkdir(parents=True)
+        (lib / "package.json").write_text('{"name": "@myorg/common"}')
+        auth_dir = lib / "auth"
+        auth_dir.mkdir()
+        (auth_dir / "validate.ts").write_text("export function validate() {}")
+
+        consumer = tmp_path / "libs" / "app"
+        consumer.mkdir(parents=True)
+        (consumer / "package.json").write_text('{"name": "@myorg/app"}')
+        caller = consumer / "handler.ts"
+        caller.write_text('import { validate } from "@myorg/common/auth/validate";')
+
+        parser = CodeParser()
+        nodes, edges = parser.parse_file(caller)
+        imports = [e for e in edges if e.kind == "IMPORTS_FROM"]
+        targets = {e.target for e in imports}
+        assert any("validate.ts" in t for t in targets), (
+            f"Expected validate.ts in targets, got: {targets}"
+        )

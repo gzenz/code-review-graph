@@ -244,6 +244,8 @@ class CodeParser:
         self._tsconfig_resolver = TsconfigResolver()
         self._handlers: dict[str, "BaseLanguageHandler"] = {}
         self._type_sets_cache: dict[str, tuple] = {}
+        self._workspace_map: dict[str, str] = {}  # pkg name → directory path
+        self._workspace_map_built = False
         self._lock = threading.Lock()
         self._register_handlers()
 
@@ -2795,6 +2797,105 @@ class CodeParser:
             self._module_file_cache[cache_key] = resolved
         return resolved
 
+    def _build_workspace_map(self, file_path: str) -> None:
+        """Scan for a root package.json with workspaces and build pkg→dir map."""
+        if self._workspace_map_built:
+            return
+        with self._lock:
+            if self._workspace_map_built:
+                return
+            self._workspace_map_built = True
+        # Walk up from file_path looking for package.json with "workspaces"
+        current = Path(file_path).parent.resolve()
+        root_pkg = None
+        while True:
+            candidate = current / "package.json"
+            if candidate.is_file():
+                try:
+                    data = json.loads(candidate.read_text(encoding="utf-8"))
+                    if "workspaces" in data:
+                        root_pkg = candidate
+                        break
+                except (OSError, json.JSONDecodeError):
+                    pass
+            parent = current.parent
+            if parent == current:
+                return
+            current = parent
+
+        repo_root = root_pkg.parent
+        workspaces = root_pkg and json.loads(
+            root_pkg.read_text(encoding="utf-8"),
+        ).get("workspaces", [])
+        if not workspaces:
+            return
+
+        # Expand workspace globs to directories
+        pkg_dirs: list[Path] = []
+        for ws in workspaces:
+            if isinstance(ws, str) and not ws.startswith("!"):
+                # Strip trailing /** or /*
+                ws_clean = ws.rstrip("/*")
+                ws_path = repo_root / ws_clean
+                if ws_path.is_dir():
+                    # Check if it's a direct package (has package.json)
+                    if (ws_path / "package.json").is_file():
+                        pkg_dirs.append(ws_path)
+                    else:
+                        # Glob one level deeper for workspace dirs
+                        for child in ws_path.iterdir():
+                            if child.is_dir() and (child / "package.json").is_file():
+                                pkg_dirs.append(child)
+
+        for pkg_dir in pkg_dirs:
+            try:
+                pkg_data = json.loads(
+                    (pkg_dir / "package.json").read_text(encoding="utf-8"),
+                )
+                name = pkg_data.get("name")
+                if name:
+                    self._workspace_map[name] = str(pkg_dir.resolve())
+            except (OSError, json.JSONDecodeError):
+                continue
+
+        if self._workspace_map:
+            logger.debug(
+                "Workspace map: %d packages resolved", len(self._workspace_map),
+            )
+
+    def _resolve_workspace_import(self, module: str) -> Optional[str]:
+        """Resolve a workspace package import to a directory path."""
+        # Exact match: import "@scope/pkg"
+        if module in self._workspace_map:
+            return self._workspace_map[module]
+        # Subpath: import "@scope/pkg/lib/auth/something"
+        # Find the longest matching package prefix
+        best_match = ""
+        for pkg_name in self._workspace_map:
+            if module.startswith(pkg_name + "/") and len(pkg_name) > len(best_match):
+                best_match = pkg_name
+        if best_match:
+            subpath = module[len(best_match) + 1:]
+            pkg_dir = self._workspace_map[best_match]
+            # Try to resolve the subpath to a file
+            base = Path(pkg_dir) / subpath
+            extensions = [".ts", ".tsx", ".js", ".jsx"]
+            if base.is_file():
+                return str(base.resolve())
+            for ext in extensions:
+                target = base.with_suffix(ext)
+                if target.is_file():
+                    return str(target.resolve())
+            if base.is_dir():
+                for ext in extensions:
+                    target = base / f"index{ext}"
+                    if target.is_file():
+                        return str(target.resolve())
+            # Return the package directory even if subpath doesn't resolve
+            # This still helps plausible_caller matching
+            return pkg_dir
+        return None
+
     def _do_resolve_module(
         self, module: str, file_path: str, language: str,
     ) -> Optional[str]:
@@ -2827,7 +2928,12 @@ class CodeParser:
                         if target.is_file():
                             return str(target.resolve())
             else:
-                # Non-relative import — try tsconfig path alias resolution
+                # Non-relative import — try workspace package resolution first
+                self._build_workspace_map(file_path)
+                ws_resolved = self._resolve_workspace_import(module)
+                if ws_resolved:
+                    return ws_resolved
+                # Fall back to tsconfig path alias resolution
                 resolved = self._tsconfig_resolver.resolve_alias(module, file_path)
                 if resolved:
                     return resolved

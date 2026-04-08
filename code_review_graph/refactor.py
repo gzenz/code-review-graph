@@ -8,6 +8,7 @@ traversal prevention.
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 import threading
@@ -27,7 +28,14 @@ logger = logging.getLogger(__name__)
 _FRAMEWORK_BASE_CLASSES = frozenset({
     "Base", "DeclarativeBase", "Model", "BaseModel", "BaseSettings",
     "db.Model", "TableBase",
+    # AWS CDK constructs -- instantiated by CDK app wiring, not explicit CALLS.
+    "Stack", "NestedStack", "Construct",
 })
+
+# Class name suffixes that indicate CDK/IaC constructs.
+# These are instantiated by framework wiring, not direct CALLS edges.
+# Used as fallback when INHERITS edges to external base classes are absent.
+_CDK_CLASS_SUFFIXES = ("Stack", "Construct", "Pipeline", "Resources")
 
 # Patterns for mock/stub variables in test files that should not be flagged dead.
 _MOCK_NAME_RE = re.compile(
@@ -202,6 +210,19 @@ def _is_test_file(file_path: str) -> bool:
     return bool(_TEST_FILE_RE.search(file_path))
 
 
+_MIN_PKG_SEGMENT_LEN = 4  # ignore short dirs like "src", "lib", "app"
+
+
+@functools.lru_cache(maxsize=4096)
+def _path_segments(file_path: str) -> tuple[str, ...]:
+    """Return directory segments long enough to serve as package-name anchors."""
+    parts = file_path.replace("\\", "/").split("/")
+    return tuple(
+        p for p in parts[:-1]  # skip the filename itself
+        if len(p) >= _MIN_PKG_SEGMENT_LEN and p not in ("home", "src", "lib", "app")
+    )
+
+
 _TYPE_IDENT_RE = re.compile(r"[A-Z][A-Za-z0-9_]*")
 
 
@@ -282,20 +303,33 @@ def find_dead_code(
         if node_name and name_counts.get(node_name, 0) == 1:
             return True
         for imp_target in importer_files.get(edge_file, ()):
-            if imp_target.startswith(node_file):
+            # Strip "::name" suffix — workspace-resolved imports may include it
+            imp_path = imp_target.split("::")[0] if "::" in imp_target else imp_target
+            if imp_path.startswith(node_file) or node_file.startswith(imp_path + "/"):
                 return True
             # 2-hop: edge_file imports X, X re-exports from node_file (barrel files)
             for imp2 in importer_files.get(imp_target, ()):
-                if imp2.startswith(node_file):
+                imp2_path = imp2.split("::")[0] if "::" in imp2 else imp2
+                if imp2_path.startswith(node_file) or node_file.startswith(imp2_path + "/"):
                     return True
+            # Package-alias heuristic: monorepo imports like "@scope/pkg-name"
+            # contain the directory name of the target package.  Check if the
+            # import target string contains a significant directory segment from
+            # the node's file path (e.g. "lambda-common" in both the import
+            # "@cova-utils/lambda-common" and the path "libraries/lambda-common/...").
+            if not imp_target.startswith("/"):
+                # imp_target is a package specifier, not a file path
+                for seg in _path_segments(node_file):
+                    if seg in imp_target:
+                        return True
         return False
 
     dead: list[dict[str, Any]] = []
 
     for node in candidates:
 
-        # Skip test nodes.
-        if node.is_test:
+        # Skip test nodes and anything defined in test files.
+        if node.is_test or _is_test_file(node.file_path):
             continue
 
         # Skip dunder methods -- invoked by runtime, never have explicit callers.
@@ -335,6 +369,9 @@ def find_dead_code(
             }
             if base_names & _FRAMEWORK_BASE_CLASSES:
                 continue
+            # Fallback: CDK class name suffixes (no INHERITS edge for external bases)
+            if any(node.name.endswith(s) for s in _CDK_CLASS_SUFFIXES):
+                continue
 
         # Skip @property-decorated functions -- invoked via attribute access,
         # not function calls, so they'll never have CALLS edges.
@@ -346,15 +383,29 @@ def find_dead_code(
 
         # Check for callers (CALLS), test refs (TESTED_BY), importers (IMPORTS_FROM).
         incoming = store.get_edges_by_target(node.qualified_name)
-        # Also check bare-name edges -- most CALLS/TESTED_BY edges store
-        # unqualified target names (e.g. "run_agent" not "/path/agent.py::run_agent").
+        # Also check class-qualified edges (e.g. "ClassName::method") which
+        # lack the file-path prefix used in node.qualified_name.
+        if not any(e.kind == "CALLS" for e in incoming) and node.parent_name:
+            class_qn = f"{node.parent_name}::{node.name}"
+            incoming = incoming + store.get_edges_by_target(class_qn)
+        # Also check bare-name and partially-qualified edges.
+        # CALLS targets may be bare ("funcName"), class-qualified
+        # ("Class::method"), or workspace-qualified ("pkg/dir::funcName").
         if not any(e.kind == "CALLS" for e in incoming):
             bare = store.search_edges_by_target_name(node.name, kind="CALLS")
-            bare = [
-                e for e in bare
+            # Also search for partially-qualified targets ending with ::name
+            suffix_rows = conn.execute(
+                "SELECT * FROM edges WHERE kind = 'CALLS'"
+                " AND target_qualified LIKE ?",
+                (f"%::{node.name}",),
+            ).fetchall()
+            suffix_edges = [store._row_to_edge(r) for r in suffix_rows]
+            all_bare = bare + suffix_edges
+            all_bare = [
+                e for e in all_bare
                 if _is_plausible_caller(e.file_path, node.file_path, node.name)
             ]
-            incoming = incoming + bare
+            incoming = incoming + all_bare
         if not any(e.kind == "TESTED_BY" for e in incoming):
             bare_tb = store.search_edges_by_target_name(node.name, kind="TESTED_BY")
             bare_tb = [
@@ -370,6 +421,17 @@ def find_dead_code(
         has_test_refs = any(e.kind == "TESTED_BY" for e in incoming)
         has_importers = any(e.kind == "IMPORTS_FROM" for e in incoming)
         has_subclasses = any(e.kind == "INHERITS" for e in incoming)
+
+        # For classes with no direct references, check if any member has callers.
+        if node.kind == "Class" and not (has_callers or has_test_refs or has_importers or has_subclasses):
+            member_prefix = node.qualified_name + "."
+            member_calls = conn.execute(
+                "SELECT COUNT(*) FROM edges WHERE kind = 'CALLS'"
+                " AND target_qualified LIKE ?",
+                (f"%{member_prefix}%",),
+            ).fetchone()[0]
+            if member_calls > 0:
+                has_callers = True
 
         if not has_callers and not has_test_refs and not has_importers and not has_subclasses:
             # Check if this is a method override where the base class method
