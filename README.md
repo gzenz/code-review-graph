@@ -538,7 +538,7 @@ Ensure `fastmcp` is updated to at least `3.2.4+`. Then, configure your `~/.claud
 ## Contributing
 
 ```bash
-git clone https://github.com/tirth8205/code-review-graph.git
+git clone https://github.com/gzenz/code-review-graph.git
 cd code-review-graph
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
@@ -559,7 +559,7 @@ MIT. See [LICENSE](LICENSE).
 
 <p align="center">
 <br>
-<a href="https://code-review-graph.com">code-review-graph.com</a><br><br>
-<code>pip install code-review-graph && code-review-graph install</code><br>
+<a href="https://github.com/gzenz/code-review-graph">github.com/gzenz/code-review-graph</a><br><br>
+<code>pip install git+https://github.com/gzenz/code-review-graph.git && code-review-graph install</code><br>
 <sub>Works with Codex, Claude Code, Cursor, Windsurf, Zed, Continue, OpenCode, Antigravity, Gemini CLI, Qwen, Qoder, Kiro, GitHub Copilot, and GitHub Copilot CLI</sub>
 </p>
