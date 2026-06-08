@@ -1078,7 +1078,11 @@ def main() -> None:
         elif args.command == "watch":
             from .postprocessing import run_post_processing
 
-            watch(repo_root, store, on_files_updated=run_post_processing)
+            try:
+                watch(repo_root, store, on_files_updated=run_post_processing)
+            except RuntimeError as e:
+                logging.error("%s", e)
+                sys.exit(1)
 
         elif args.command == "visualize":
             from .incremental import get_data_dir

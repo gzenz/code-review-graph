@@ -30,6 +30,9 @@
 
 AI coding tools re-read your entire codebase on every task. `code-review-graph` fixes that. It builds a structural map of your code with [Tree-sitter](https://tree-sitter.github.io/tree-sitter/), tracks changes incrementally, and gives your AI assistant precise context via [MCP](https://modelcontextprotocol.io/) so it reads only what matters.
 
+> **This is an independent fork.** It tracks the excellent upstream project by [tirth8205/code-review-graph](https://github.com/tirth8205/code-review-graph) but ships a substantial set of improvements on top — most of them focused on **call-graph accuracy** (resolving the cross-file and instance-method edges the original leaves unresolved), faster builds, and a richer CLI. See [What this fork adds](#what-this-fork-adds) for the full list. Everything from upstream still works the same way; this fork is a strict superset.
+
+
 <p align="center">
   <img src="diagrams/diagram1_before_vs_after.png" alt="The Token Problem: 8.2x average token reduction across 6 real repositories" width="85%" />
 </p>
@@ -189,6 +192,36 @@ The blast-radius analysis never misses an actually impacted file (perfect recall
 - **Precision vs recall trade-off:** Impact analysis is deliberately conservative. It flags files that *might* be affected, which means some false positives in large dependency graphs.
 
 </details>
+
+---
+
+## What this fork adds
+
+Everything below is new relative to upstream [tirth8205/code-review-graph](https://github.com/tirth8205/code-review-graph). The headline theme is **call-graph resolution**: the original records many `CALLS` edges with unresolved or noisy targets, which weakens blast-radius, dead-code, and flow analysis. This fork resolves a large share of them.
+
+**Call-graph accuracy (parser & post-processing)**
+- **Cross-file `ClassName.method` resolution** — call targets like `Foo.bar()` are qualified against a project-wide symbol table and resolved to the defining file instead of being left as bare names.
+- **Fuzzy class-name disambiguation** — when two classes share a name, the directory prefix of the call site is used to pick the right one.
+- **Typed-variable enrichment** — `x: Foo` annotations and constructor assignments are used to resolve `x.method()` to `Foo.method`.
+- **Function-reference enrichment** — functions and classes passed as arguments or returned from a call now produce `CALLS`/`REFERENCES` edges.
+- **Import-map-aware bare-call resolution** — bare `func()` calls are resolved through the file's import map.
+- **Python `from X import *` expansion** — star imports are expanded by scanning the target module's exports, so star-imported calls resolve.
+- **Instance-method call-noise filtering** — drops implausible `self`/instance `CALLS` edges that previously polluted the graph.
+- **Decorator metadata** — `node.extra.decorators` is populated for functions and classes, enabling decorator-aware analysis.
+
+**Queries & reviews**
+- **Transitive test lookup + de-duplication** — `query_graph` / `tests_for` now follow transitive `TESTED_BY` links and de-duplicate results.
+
+**CLI**
+- **`enrich` subcommand** — run call-graph enrichment as a standalone step (also used for PreToolUse search enrichment).
+- **`dead-code` subcommand** — framework-aware dead-code detection from the CLI.
+- **`-q/--quiet` and `--json` flags** — machine-readable, quiet output for scripting and hooks.
+
+**Performance & robustness**
+- **Per-`db_path` connection caching** — `GraphStore` connections are cached per database with a liveness check, cutting repeated-call overhead.
+- **Per-stage build timing telemetry** — post-processing reports per-stage timings so slow stages are visible.
+- **Smarter default ignores** — `*.bundle.js` and `cdk.out/` are ignored by default so bundled/synth output does not flood the graph.
+- **Hardened test suite** — added coverage for risk scoring, flows, and parser error paths, plus upstream CI lint/type fixes.
 
 ---
 
