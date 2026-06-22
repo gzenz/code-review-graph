@@ -11,6 +11,11 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment: pypi
+    # This fork does not publish to PyPI — the `code-review-graph` package
+    # name belongs to upstream (tirth8205). Releases here are GitHub-only.
+    # Opt back in by setting the repo variable PUBLISH_TO_PYPI=true and
+    # adding the PYPI_API_TOKEN secret + a `pypi` environment.
+    if: ${{ vars.PUBLISH_TO_PYPI == 'true' }}
     steps:
       - uses: actions/checkout@v4
 

@@ -2,10 +2,33 @@
 
 ## [Unreleased]
 
+## [2.3.6+gzenz.1] - 2026-06-22
+
+Fork release on top of upstream 2.3.6. Integrates a selected set of upstream
+quality and speed improvements (verified against this fork's rewritten
+parser/query/graph code), fixes two live bugs surfaced in the process, and
+adds the previously-unreleased Nix and GDScript language support.
+
 ### Added
 
 - **Nix support** (flake-aware): `.nix` files are parsed via the `nix` tree-sitter grammar shipped with `tree-sitter-language-pack`. Top-level and nested attrset bindings become `Function` nodes with flattened dotted names (e.g. `packages.default`, `devShells.default`). In `flake.nix`, `inputs.<name>.url = "..."` strings emit `IMPORTS_FROM` edges to the URL; `import <path>` and `callPackage <path> <args>` applications in any `.nix` file emit `IMPORTS_FROM` edges (relative paths are resolved against the caller's directory). Adds 7 tests (`TestNixParsing`) and fixtures `tests/fixtures/sample.nix`, `tests/fixtures/sample_module.nix`.
 - **GDScript support** (Godot): `.gd` files are parsed via the `gdscript` tree-sitter grammar shipped with `tree-sitter-language-pack`. Extracts inner classes (`class Name:`), the file-level `class_name` identity, functions (including `static func`), `extends` parent class as an IMPORTS_FROM edge, direct calls (`call`) and method calls (`attribute_call`). Adds 10 tests and `tests/fixtures/sample.gd`.
+- **Rust test detection**: `#[test]`, `#[tokio::test]`, `#[async_std::test]`, `rstest`, and `proptest` attributes are now recognised, so Rust test functions are classified as `Test` nodes instead of `Function` (fixes `tests_for` coverage on Rust code). Ports upstream `cb94117`.
+- **Compact architecture overview**: `get_architecture_overview` gains `detail_level="minimal"` (now the default) — drops community member lists and aggregates cross-community edges to one row per community pair with counts and top edge kinds (typical reduction 600KB -> <5KB). `detail_level="standard"` returns the full per-edge output. Ports upstream `a956d09`.
+- **Search-lift node text**: embedding text now includes the dotted `Parent.name` form, an identifier word-split (`get_route_handler` -> "get route handler"), and the enclosing module directory, so natural-language queries land on the right node. Upstream measured a 0.545 -> 0.909 multi-hop retrieval gain. Changed text auto-triggers re-embedding via `text_hash`. Ports the relevant slice of upstream `c04af36`.
+- **Deterministic community detection**: igraph's RNG is seeded (`CRG_LEIDEN_SEED`, default 42) before both Leiden calls, so community IDs and sizes are reproducible across builds.
+- **GitHub Action for PR review**: composite `action.yml` that builds/updates the graph on the runner, runs `detect-changes` against the base branch, renders a risk-scored markdown report, and upserts a sticky PR comment via `gh api`. Local-first — no code leaves the runner. Optional risk gate fails the job on high/critical risk. Ports upstream `4cd8037`.
+- **Bounded change analysis**: `CRG_MAX_CHANGED_FUNCS` (default 500) caps the functions risk-scored in `analyze_changes` so a pathological PR cannot blow the MCP token budget (adds `functions_truncated` to the result). `CRG_TOOL_TIMEOUT` (default 0/off) wraps `detect_changes_tool` in a timeout that returns a structured error. From upstream `7df524c` (the frontier-cap portion was deliberately skipped).
+
+### Fixed
+
+- **`store_file_batch` transaction guard**: extracted a shared `_begin_immediate()` helper so `store_file_batch` rolls back any open transaction before `BEGIN IMMEDIATE`, instead of crashing with "cannot start a transaction within a transaction" when a caller holds an explicit transaction. Ports upstream `49734fa` (#489).
+- **fastmcp >= 3 prompt compatibility**: all five MCP prompts returned raw dicts and raised `PromptError` at the render path under fastmcp 3.2.4. They now return `Message` objects.
+- **Environment-agnostic install test**: `test_install_qoder_config` no longer hardcodes the MCP launch command as `uvx`/`code-review-graph`; it asserts against `_detect_serve_command()` so it passes regardless of whether uvx/uv/poetry are on PATH.
+
+### Changed
+
+- This fork does not publish to PyPI (the `code-review-graph` package name belongs to upstream). The publish workflow is gated behind a `PUBLISH_TO_PYPI` repo variable; releases here are GitHub-only.
 
 ## [2.3.2] - 2026-04-14
 
