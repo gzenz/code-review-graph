@@ -698,10 +698,52 @@ class TestCommunityTools:
         assert "summary" in result
 
     def test_get_architecture_overview_summary_format(self):
-        result = get_architecture_overview_func(repo_root=str(self.root))
+        result = get_architecture_overview_func(
+            repo_root=str(self.root), detail_level="standard"
+        )
         assert "Architecture:" in result["summary"]
         assert "communities" in result["summary"]
         assert "cross-community edges" in result["summary"]
+
+    def test_get_architecture_overview_defaults_to_compact_output(self):
+        result = get_architecture_overview_func(repo_root=str(self.root))
+        assert "community pairs" in result["summary"]
+        for c in result["communities"]:
+            assert "members" not in c
+
+    def test_get_architecture_overview_minimal_drops_members(self):
+        result = get_architecture_overview_func(
+            repo_root=str(self.root), detail_level="minimal"
+        )
+        assert result["status"] == "ok"
+        for c in result["communities"]:
+            assert "members" not in c
+            assert "name" in c and "size" in c and "cohesion" in c
+
+    def test_get_architecture_overview_minimal_aggregates_edges(self):
+        std = get_architecture_overview_func(
+            repo_root=str(self.root), detail_level="standard"
+        )
+        minimal = get_architecture_overview_func(
+            repo_root=str(self.root), detail_level="minimal"
+        )
+        # Minimal edges are pair-aggregated, so count is <= standard's
+        # per-edge count.
+        assert len(minimal["cross_community_edges"]) <= len(
+            std["cross_community_edges"]
+        )
+        for pair in minimal["cross_community_edges"]:
+            assert "source_community" in pair
+            assert "target_community" in pair
+            assert "edge_count" in pair
+            assert pair["edge_count"] >= 1
+            assert isinstance(pair["top_kinds"], list)
+
+    def test_get_architecture_overview_minimal_summary_label(self):
+        result = get_architecture_overview_func(
+            repo_root=str(self.root), detail_level="minimal"
+        )
+        assert "community pairs" in result["summary"]
 
 
 class TestBuildPostprocess:
