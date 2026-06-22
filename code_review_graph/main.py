@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -598,12 +599,28 @@ async def detect_changes_tool(
         detail_level: "standard" for full output, "minimal" for
             token-efficient summary. Default: standard.
     """
-    return await asyncio.to_thread(
+    coro = asyncio.to_thread(
         detect_changes_func,
         base=base, changed_files=changed_files,
         include_source=include_source, max_depth=max_depth,
         repo_root=_resolve_repo_root(repo_root), detail_level=detail_level,
     )
+    tool_timeout = int(os.environ.get("CRG_TOOL_TIMEOUT", "0"))
+    if tool_timeout > 0:
+        try:
+            return await asyncio.wait_for(coro, timeout=tool_timeout)
+        except asyncio.TimeoutError:
+            message = (
+                f"detect_changes_tool timed out after {tool_timeout}s. "
+                "Reduce scope with CRG_MAX_CHANGED_FUNCS, "
+                "or increase CRG_TOOL_TIMEOUT."
+            )
+            return {
+                "status": "error",
+                "error": message,
+                "summary": message,
+            }
+    return await coro
 
 
 @mcp.tool()
