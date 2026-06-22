@@ -18,6 +18,7 @@ from code_review_graph.embeddings import (
     _encode_vector,
     _is_localhost_url,
     _node_to_text,
+    _split_identifier,
     get_provider,
 )
 from code_review_graph.graph import GraphNode
@@ -104,6 +105,45 @@ class TestNodeToText:
         text = _node_to_text(node)
         # File kind should not add "file" as a kind label
         assert "file.py" in text
+
+    def test_includes_dotted_parent_form(self):
+        node = self._make_node(name="dispatch", parent_name="Router")
+        text = _node_to_text(node)
+        # Dotted Parent.name form is the strongest "method in class" signal.
+        assert "Router.dispatch" in text
+
+    def test_includes_word_split_form(self):
+        node = self._make_node(name="get_route_handler")
+        text = _node_to_text(node)
+        assert "get route handler" in text
+
+    def test_includes_module_directory(self):
+        node = self._make_node(file_path="app/routing/dispatch.py")
+        text = _node_to_text(node)
+        assert "routing" in text
+
+    def test_skips_uninformative_directories(self):
+        for d in ("src", "lib"):
+            node = self._make_node(file_path=f"{d}/dispatch.py")
+            text = _node_to_text(node)
+            assert d not in text.split()
+
+
+class TestSplitIdentifier:
+    def test_snake_case(self):
+        assert _split_identifier("get_route_handler") == "get route handler"
+
+    def test_camel_case(self):
+        assert _split_identifier("dispatchRequest") == "dispatch Request"
+
+    def test_pascal_case(self):
+        assert _split_identifier("APIRoute") == "APIRoute"
+
+    def test_dotted(self):
+        assert _split_identifier("Router.dispatch") == "Router dispatch"
+
+    def test_empty(self):
+        assert _split_identifier("") == ""
 
 
 class TestEmbeddingStore:
