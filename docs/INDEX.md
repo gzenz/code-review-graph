@@ -3,6 +3,7 @@
 - [USAGE.md](USAGE.md) -- How to install and use
 - [FEATURES.md](FEATURES.md) -- What's included, changelog
 - [COMMANDS.md](COMMANDS.md) -- All 22 MCP tools, 5 MCP prompts, skills, and CLI commands
+- [GITHUB_ACTION.md](GITHUB_ACTION.md) -- Risk-scored PR review comments via GitHub Actions
 - [LLM-OPTIMIZED-REFERENCE.md](LLM-OPTIMIZED-REFERENCE.md) -- Token-optimized reference (Claude Code reads this)
 - [architecture.md](architecture.md) -- System design and data flow
 - [schema.md](schema.md) -- Graph node/edge schema, SQLite tables (including flows, communities, FTS5)
