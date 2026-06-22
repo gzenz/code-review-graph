@@ -294,7 +294,8 @@ def analyze_changes(
 
     Returns:
         Dict with ``summary``, ``risk_score``, ``changed_functions``,
-        ``affected_flows``, ``test_gaps``, and ``review_priorities``.
+        ``affected_flows``, ``test_gaps``, ``review_priorities``, and
+        ``functions_truncated``.
     """
     # Compute changed ranges if not provided.
     if changed_ranges is None and repo_root is not None:
@@ -314,6 +315,14 @@ def analyze_changes(
         n for n in changed_nodes
         if n.kind in ("Function", "Test", "Class")
     ]
+
+    # Cap to bound the response size on pathological PRs (generated code,
+    # vendored dumps, mass refactors) so a single change cannot blow the
+    # MCP token budget. Tune via CRG_MAX_CHANGED_FUNCS.
+    _max_funcs = int(os.environ.get("CRG_MAX_CHANGED_FUNCS", "500"))
+    funcs_truncated = len(changed_funcs) > _max_funcs
+    if funcs_truncated:
+        changed_funcs = changed_funcs[:_max_funcs]
 
     # Compute per-node risk scores.
     node_risks: list[dict[str, Any]] = []
@@ -359,6 +368,11 @@ def analyze_changes(
     if test_gaps:
         gap_names = [g["name"] for g in test_gaps[:5]]
         summary_parts.append(f"  - Untested: {', '.join(gap_names)}")
+    if funcs_truncated:
+        summary_parts.append(
+            f"  - Warning: analysis capped at {_max_funcs} functions "
+            f"(set CRG_MAX_CHANGED_FUNCS to adjust)"
+        )
 
     return {
         "summary": "\n".join(summary_parts),
@@ -367,4 +381,5 @@ def analyze_changes(
         "affected_flows": affected["affected_flows"],
         "test_gaps": test_gaps,
         "review_priorities": review_priorities,
+        "functions_truncated": funcs_truncated,
     }

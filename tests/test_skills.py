@@ -788,8 +788,10 @@ class TestInstallPlatformConfigs:
         assert "mcpServers" in data
         assert "code-review-graph" in data["mcpServers"]
         assert data["mcpServers"]["code-review-graph"]["type"] == "stdio"
-        import shutil
-        expected_cmd = "uvx" if shutil.which("uvx") else "code-review-graph"
+        # The launch command is environment-dependent (poetry / uv / uvx /
+        # sys.executable fallback). Assert it matches the code's own
+        # detection rather than hardcoding one environment's answer.
+        expected_cmd = _detect_serve_command()[0]
         assert data["mcpServers"]["code-review-graph"]["command"] == expected_cmd
 
 

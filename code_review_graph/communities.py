@@ -7,11 +7,19 @@ optional) with a file-based grouping fallback when igraph is not installed.
 from __future__ import annotations
 
 import logging
+import os
+import random
 import re
 from collections import Counter, defaultdict
 from typing import Any
 
 from .graph import GraphEdge, GraphNode, GraphStore, _sanitize_name
+
+# Fixed seed for igraph's RNG so Leiden community detection is reproducible
+# across runs. Without this, two builds of the same graph produce different
+# community IDs / sizes, breaking benchmark comparability. Override with
+# CRG_LEIDEN_SEED env var if you need a different seed.
+_LEIDEN_SEED = 42
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +34,19 @@ try:
 except ImportError:
     ig = None  # type: ignore[assignment]
     IGRAPH_AVAILABLE = False
+
+
+def _seed_igraph_rng() -> None:
+    """Seed igraph's RNG so Leiden community detection is reproducible.
+
+    Reads CRG_LEIDEN_SEED (default :data:`_LEIDEN_SEED`). No-op if igraph
+    is unavailable.
+    """
+    if ig is None:
+        return
+    seed = int(os.environ.get("CRG_LEIDEN_SEED", _LEIDEN_SEED))
+    # Reproducible community detection, not a security-sensitive context. nosec B311.
+    ig.set_random_number_generator(random.Random(seed))  # nosec B311
 
 # ---------------------------------------------------------------------------
 # Edge weight mapping
@@ -282,6 +303,7 @@ def _detect_leiden(
         g.vcount(), g.ecount(),
     )
 
+    _seed_igraph_rng()
     partition = g.community_leiden(
         objective_function="modularity",
         weights="weight",
@@ -501,6 +523,7 @@ def _split_oversized(
                 directed=False,
             )
             g.es["weight"] = ig_weights
+            _seed_igraph_rng()
             partition = g.community_leiden(
                 objective_function="modularity",
                 weights="weight",
