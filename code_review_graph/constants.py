@@ -71,3 +71,10 @@ IMPACT_DEPTH_DECAY = _bounded_float_env(
 IMPACT_SCORE_FLOOR = _bounded_float_env(
     "CRG_IMPACT_SCORE_FLOOR", 0.05, lower=0.0, upper=1.0,
 )
+
+# Receiver names treated as "the shared state dict" for READS_STATE_KEY /
+# WRITES_STATE_KEY extraction (LangGraph-style state-dict access). Comma-separated;
+# matched only against bare identifiers (e.g. ``state["k"]``, ``state.get("k")``).
+STATE_RECEIVERS = frozenset(
+    s.strip() for s in os.environ.get("CRG_STATE_RECEIVERS", "state").split(",") if s.strip()
+)

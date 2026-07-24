@@ -38,6 +38,8 @@ _QUERY_PATTERNS = {
     "endpoints_for": "Find endpoints handled by a method",
     "consumers_of": "Find classes that consume a Spring configuration property",
     "file_summary": "Get a summary of all nodes in a file",
+    "readers_of_key": "Find all functions that read a given state-dict key",
+    "writers_of_key": "Find all functions that write a given state-dict key",
 }
 
 _JAVA_FQN_PART = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
@@ -100,6 +102,10 @@ def _rank_disambiguation_candidates(
         return rank, node.qualified_name
 
     return [node_to_dict(node) for node in sorted(candidates, key=score)]
+
+
+# Virtual file_path prefix for StateKey nodes (mirrors parser.STATE_SENTINEL).
+_STATE_SENTINEL = "<state>"
 
 
 def get_impact_radius(
@@ -275,6 +281,64 @@ def query_graph(
             results.append(result)
             if edge is not None:
                 edges_out.append(edge_to_dict(edge))
+
+        # State-key patterns: resolve the sentinel-qualified name directly.
+        # A bare key like "retry_reason" would otherwise hit the generic
+        # search fallback and could match a same-named function.
+        if pattern in ("readers_of_key", "writers_of_key"):
+            qn = (
+                target if target.startswith(f"{_STATE_SENTINEL}::")
+                else f"{_STATE_SENTINEL}::{target}"
+            )
+            edge_kind = (
+                "READS_STATE_KEY" if pattern == "readers_of_key"
+                else "WRITES_STATE_KEY"
+            )
+            seen_src: set[str] = set()
+            for e in store.get_edges_by_target(qn):
+                if e.kind != edge_kind:
+                    continue
+                src = store.get_node(e.source_qualified)
+                if src and src.qualified_name not in seen_src:
+                    seen_src.add(src.qualified_name)
+                    results.append(node_to_dict(src))
+                elif src is None and e.source_qualified not in seen_src:
+                    # Orphaned edge whose source node row is gone (e.g. the
+                    # source file was deleted before reparse). Rare; emit a
+                    # node_to_dict-shaped stub so consumers see a consistent
+                    # schema rather than a truncated dict.
+                    seen_src.add(e.source_qualified)
+                    sanitized = _sanitize_name(e.source_qualified)
+                    results.append({
+                        "id": None,
+                        "kind": "Module",
+                        "name": sanitized,
+                        "qualified_name": sanitized,
+                        "file_path": e.source_qualified,
+                        "line_start": 0,
+                        "line_end": 0,
+                        "language": "python",
+                        "parent_name": None,
+                        "is_test": False,
+                    })
+                edges_out.append(edge_to_dict(e))
+            key = qn.split("::", 1)[-1]
+            summary = f"Found {len(results)} {pattern}('{key}')"
+            if detail_level == "minimal":
+                return {
+                    "status": "ok", "pattern": pattern, "target": key,
+                    "description": _QUERY_PATTERNS[pattern],
+                    "summary": summary, "result_count": len(results),
+                    "results": [
+                        {k: r[k] for k in ("name", "kind", "file_path") if k in r}
+                        for r in results[:5]
+                    ],
+                }
+            return {
+                "status": "ok", "pattern": pattern, "target": key,
+                "description": _QUERY_PATTERNS[pattern],
+                "summary": summary, "results": results, "edges": edges_out,
+            }
 
         # For callers_of, skip common builtins early (bare names only)
         # "Who calls .map()?" returns hundreds of useless hits.

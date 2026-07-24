@@ -63,8 +63,11 @@ Relevant responses may include compact estimated `context_savings` metadata.
 #### `query_graph_tool`
 ```
 pattern: str    # callers_of, callees_of, imports_of, importers_of,
-                # children_of, tests_for, inheritors_of, file_summary
-target: str     # Node name, qualified name, or file path
+                # children_of, tests_for, inheritors_of, file_summary,
+                # readers_of_key, writers_of_key
+target: str     # Node name, qualified name, or file path.
+                # For readers_of_key/writers_of_key: the bare state-dict
+                # key (e.g. "retry_reason").
 repo_root: str | None
 detail_level: str = "standard"   # "standard" or "minimal"
 ```

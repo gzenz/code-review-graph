@@ -2090,3 +2090,118 @@ def test_impact_radius_tool_exposes_best_first_scores(monkeypatch, tmp_path):
     ]
     scores = [node["impact_score"] for node in result["impacted_nodes"]]
     assert scores == sorted(scores, reverse=True)
+
+
+class TestStateKeyQuery:
+    """Integration tests for readers_of_key / writers_of_key query patterns."""
+
+    def setup_method(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.root = Path(self.tmp_dir).resolve()
+        (self.root / ".git").mkdir()
+        (self.root / ".code-review-graph").mkdir()
+        db_path = str(self.root / ".code-review-graph" / "graph.db")
+        self.store = GraphStore(db_path)
+        self._seed()
+
+    def teardown_method(self):
+        self.store.close()
+        import shutil
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def _seed(self):
+        a = str(self.root / "a.py")
+        b = str(self.root / "b.py")
+        for f in (a, b):
+            self.store.upsert_node(NodeInfo(
+                kind="File", name=Path(f).name, file_path=f,
+                line_start=1, line_end=10, language="python",
+            ))
+        # Two reader functions, one writer function.
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="reader_one", file_path=a,
+            line_start=1, line_end=3, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="reader_two", file_path=b,
+            line_start=1, line_end=3, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="writer_one", file_path=a,
+            line_start=4, line_end=6, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="StateKey", name="flag", file_path="<state>",
+            line_start=0, line_end=0, language="python",
+        ))
+        # reader_one reads "flag" twice (distinct lines) -> dedup to 1 result.
+        for ln in (2, 3):
+            self.store.upsert_edge(EdgeInfo(
+                kind="READS_STATE_KEY", source=f"{a}::reader_one",
+                target="<state>::flag", file_path=a, line=ln,
+            ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="READS_STATE_KEY", source=f"{b}::reader_two",
+            target="<state>::flag", file_path=b, line=2,
+        ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="WRITES_STATE_KEY", source=f"{a}::writer_one",
+            target="<state>::flag", file_path=a, line=5,
+        ))
+        self.store.commit()
+
+    def test_readers_of_key_dedups_sources(self):
+        r = query_graph("readers_of_key", "flag", repo_root=str(self.root))
+        assert r["status"] == "ok"
+        names = sorted(n["name"] for n in r["results"])
+        assert names == ["reader_one", "reader_two"]
+        # Two distinct-line edges for reader_one are both retained.
+        assert len(r["edges"]) == 3
+
+    def test_writers_of_key_filters_kind(self):
+        r = query_graph("writers_of_key", "flag", repo_root=str(self.root))
+        assert r["status"] == "ok"
+        names = sorted(n["name"] for n in r["results"])
+        assert names == ["writer_one"]
+
+    def test_readers_ignores_writers_and_vice_versa(self):
+        readers = query_graph("readers_of_key", "flag", repo_root=str(self.root))
+        assert "writer_one" not in {n["name"] for n in readers["results"]}
+
+    def test_minimal_detail_shape(self):
+        r = query_graph(
+            "readers_of_key", "flag",
+            repo_root=str(self.root), detail_level="minimal",
+        )
+        assert r["result_count"] == 2
+        for row in r["results"]:
+            assert set(row.keys()) <= {"name", "kind", "file_path"}
+
+    def test_sentinel_qualified_target_accepted(self):
+        r = query_graph(
+            "readers_of_key", "<state>::flag", repo_root=str(self.root),
+        )
+        assert r["status"] == "ok"
+        assert r["target"] == "flag"
+        assert len(r["results"]) == 2
+
+    def test_nonexistent_key_returns_ok_empty(self):
+        r = query_graph("readers_of_key", "nope", repo_root=str(self.root))
+        assert r["status"] == "ok"
+        assert r["results"] == []
+
+    def test_bare_key_not_confused_with_function(self):
+        # A function literally named the same as the key must not be returned.
+        a = str(self.root / "a.py")
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="flag", file_path=a,
+            line_start=7, line_end=8, language="python",
+        ))
+        self.store.commit()
+        r = query_graph("readers_of_key", "flag", repo_root=str(self.root))
+        # Resolution goes through <state>::flag, so results are the reader
+        # functions — never the unrelated function that happens to be named
+        # "flag", and never the StateKey node itself.
+        assert sorted(n["name"] for n in r["results"]) == [
+            "reader_one", "reader_two",
+        ]
