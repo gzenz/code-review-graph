@@ -29,7 +29,7 @@ from typing import Any
 logger = logging.getLogger("render_pr_comment")
 
 MARKER = "<!-- code-review-graph-report -->"
-REPO_URL = "https://github.com/tirth8205/code-review-graph"
+REPO_URL = "https://github.com/gzenz/code-review-graph"
 FOOTER = (
     f"*Powered by [code-review-graph]({REPO_URL}) — "
     "local-first analysis; no code leaves the CI runner.*"

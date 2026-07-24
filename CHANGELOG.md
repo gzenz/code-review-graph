@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+## [2.3.7+gzenz.1] - 2026-07-24
+
+**Fork catch-up release.** Rebased the `gzenz` fork onto upstream `v2.3.7`
+(commit `6ce25b4`, 261 upstream commits since the fork's prior base
+`394a46d`). The fork's divergent history was reduced to its genuinely unique
+work; everything else upstream had already absorbed or superseded.
+
+### Added
+
+- **State-dict key read/write edges (Python)**: the parser emits
+  `READS_STATE_KEY` / `WRITES_STATE_KEY` edges for accesses to a shared
+  "state" dict (the LangGraph pattern: `state["k"]`, `state.get("k")`,
+  `state.pop`/`setdefault`, nested `state["a"]["b"]`, and writes
+  `state["k"] = ...`). A virtual `StateKey` node is parked under a `<state>`
+  sentinel path that survives per-file reparse and is excluded from
+  hub/dead-code/community/embedding/impact analytics. Two `query_graph`
+  patterns — `readers_of_key` / `writers_of_key` — resolve a bare key to its
+  reader/writer functions. Receiver name configurable via
+  `CRG_STATE_RECEIVERS` (default `state`). Deliberately syntactic (no type
+  inference); documented limitations apply (local dicts named `state` are
+  possible false positives; nested keys are flattened; membership tests
+  untracked). Tests: `TestStateKeyExtraction`, `TestStateKeyLifecycle`,
+  `TestStateKeyQuery` plus fixture `tests/fixtures/sample_state_graph.py`.
+
+### Changed
+
+- Fork metadata re-pointed at `gzenz/code-review-graph` (Repository,
+  Documentation, Changelog, Issues URLs; badges; clone URL). Dropped the
+  upstream `Homepage` field. Version set to `2.3.7+gzenz.1`.
+
+### Dropped (absorbed by upstream v2.3.7)
+
+- The fork's `cli.py` watch-lock `RuntimeError` handler — upstream now
+  catches it (`cli.py`).
+- The fork's PR #1 quality/speed cherry-picks — superseded by upstream's
+  evolved versions (`embeddings.py`, `community_tools.py`, `migrations.py`,
+  `prompts.py` are byte-identical or strict supersets).
+
 ## [2.3.7] - 2026-07-18
 
 **Maintainer-reconciliation release.** This release packages the verified work

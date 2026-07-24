@@ -1,7 +1,5 @@
 <h1 align="center">code-review-graph</h1>
 
-<a href="https://trendshift.io/repositories/23329?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-23329" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/23329" alt="tirth8205%2Fcode-review-graph | Trendshift" width="250" height="55"/></a>
-
 <p align="center">
   <strong>Stop burning tokens. Start reviewing smarter.</strong>
 </p>
@@ -15,15 +13,11 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/code-review-graph/"><img src="https://img.shields.io/pypi/v/code-review-graph?style=flat-square&color=blue" alt="PyPI"></a>
-  <a href="https://pepy.tech/project/code-review-graph"><img src="https://img.shields.io/pepy/dt/code-review-graph?style=flat-square" alt="Downloads"></a>
-  <a href="https://github.com/tirth8205/code-review-graph/stargazers"><img src="https://img.shields.io/github/stars/tirth8205/code-review-graph?style=flat-square" alt="Stars"></a>
+  <a href="https://github.com/gzenz/code-review-graph/stargazers"><img src="https://img.shields.io/github/stars/gzenz/code-review-graph?style=flat-square" alt="Stars"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="MIT Licence"></a>
-  <a href="https://github.com/tirth8205/code-review-graph/actions/workflows/ci.yml"><img src="https://github.com/tirth8205/code-review-graph/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/gzenz/code-review-graph/actions/workflows/ci.yml"><img src="https://github.com/gzenz/code-review-graph/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg?style=flat-square" alt="Python 3.10+"></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-compatible-green.svg?style=flat-square" alt="MCP"></a>
-  <a href="https://code-review-graph.com"><img src="https://img.shields.io/badge/website-code--review--graph.com-blue?style=flat-square" alt="Website"></a>
-  <a href="https://discord.gg/3p58KXqGFN"><img src="https://img.shields.io/badge/discord-join-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center">
@@ -39,6 +33,8 @@
 <br>
 
 AI coding tools can end up re-reading large parts of your codebase on review tasks. `code-review-graph` fixes that. It builds a structural map of your code with [Tree-sitter](https://tree-sitter.github.io/tree-sitter/), tracks changes incrementally, and gives your AI assistant precise context via [MCP](https://modelcontextprotocol.io/) so it reads only what matters.
+
+> **This is an independent fork** of [tirth8205/code-review-graph](https://github.com/tirth8205/code-review-graph), tracking upstream `v2.3.7` plus a small set of fork-specific additions — most notably **state-dict key read/write edges** for Python (LangGraph-style `state["k"]` access), queryable via `readers_of_key` / `writers_of_key`. See [CHANGELOG.md](CHANGELOG.md) for the fork delta.
 
 <p align="center">
   <img src="diagrams/diagram1_before_vs_after.png" alt="The Token Problem: 38x to 528x token reduction across 6 real repositories" width="85%" />
@@ -183,7 +179,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: tirth8205/code-review-graph@v2.3.6
+      - uses: gzenz/code-review-graph@main  # pin to a tag or commit SHA in production
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -457,7 +453,7 @@ Your AI assistant uses these automatically once the graph is built.
 | `get_minimal_context_tool` | Ultra-compact context (~100 tokens) — call this first |
 | `get_impact_radius_tool` | Blast radius of changed files |
 | `get_review_context_tool` | Token-optimised review context with structural summary |
-| `query_graph_tool` | Callers, callees, tests, imports, inheritance queries |
+| `query_graph_tool` | Callers, callees, tests, imports, inheritance, and state-key reader/writer queries |
 | `traverse_graph_tool` | BFS/DFS traversal from any node with token budget |
 | `semantic_search_nodes_tool` | Search code entities by name or meaning |
 | `embed_graph_tool` | Compute vector embeddings for semantic search |
@@ -530,6 +526,7 @@ pip install "code-review-graph[all]"                 # All optional dependencies
 | `CRG_MAX_CHANGED_FUNCS` | Maximum changed functions analysed in one change report | `500` |
 | `CRG_MAX_TRANSITIVE_FRONTIER` | Maximum frontier size for transitive caller/callee expansion | `50` |
 | `CRG_TOOL_TIMEOUT` | Optional timeout in seconds for bounded MCP tools (`0` disables timeout) | `0` |
+| `CRG_STATE_RECEIVERS` | Comma-separated receiver names treated as the shared state dict for `READS_STATE_KEY`/`WRITES_STATE_KEY` extraction | `state` |
 | `CRG_RECURSE_SUBMODULES` | Include git submodules in file collection when set to `1`, `true`, or `yes` | - |
 | `CRG_TOOLS` | Comma-separated allowlist of MCP tools to expose when serving | - |
 | `GOOGLE_API_KEY` | API key for Google Gemini embeddings | - |
@@ -656,7 +653,7 @@ Ensure `fastmcp` is updated to at least `3.2.4+`. Then, configure your `~/.claud
 ## Contributing
 
 ```bash
-git clone https://github.com/tirth8205/code-review-graph.git
+git clone https://github.com/gzenz/code-review-graph.git
 cd code-review-graph
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
@@ -677,7 +674,7 @@ MIT. See [LICENSE](LICENSE).
 
 <p align="center">
 <br>
-<a href="https://code-review-graph.com">code-review-graph.com</a><br><br>
+<a href="https://github.com/gzenz/code-review-graph">github.com/gzenz/code-review-graph</a><br><br>
 <code>pip install code-review-graph && code-review-graph install</code><br>
 <sub>Works with Codex, Claude Code, CodeBuddy Code, Cursor, Windsurf, Zed, Continue, OpenCode, Antigravity, Gemini CLI, Qwen, Qoder, Kiro, GitHub Copilot, and GitHub Copilot CLI</sub>
 </p>
