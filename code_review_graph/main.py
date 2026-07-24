@@ -230,10 +230,14 @@ def query_graph_tool(
     - tests_for: Find tests for the target
     - inheritors_of: Find classes inheriting from the target
     - file_summary: Get all nodes in a file
+    - readers_of_key: Find functions that read a given state-dict key
+    - writers_of_key: Find functions that write a given state-dict key
 
     Args:
         pattern: Query pattern name (see above).
         target: Node name, qualified name, or file path to query.
+                For readers_of_key/writers_of_key, the bare state key
+                (e.g. "retry_reason").
         repo_root: Repository root path. Auto-detected if omitted.
         detail_level: "standard" for full output, "minimal" for compact summary. Default: standard.
     """

@@ -6,6 +6,7 @@ Extracts structural nodes (classes, functions, imports, types) and edges
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import logging
@@ -17,7 +18,13 @@ from typing import NamedTuple, Optional
 
 import tree_sitter_language_pack as tslp
 
+from .constants import STATE_RECEIVERS
 from .tsconfig_resolver import TsconfigResolver
+
+# Synthetic file_path for the virtual StateKey nodes. A state key is cross-file,
+# but node storage is per-file atomic replace keyed on file_path; parking StateKey
+# rows under this sentinel means no real-file reparse ever deletes them.
+STATE_SENTINEL = "<state>"
 
 
 class CellInfo(NamedTuple):
@@ -834,6 +841,9 @@ class CodeParser:
         self._tsconfig_resolver = TsconfigResolver()
         # Per-parse cache of Dart pubspec root lookups; see #87
         self._dart_pubspec_cache: dict[tuple[str, str], Optional[Path]] = {}
+        # Bare identifier names treated as the shared state dict for
+        # READS_STATE_KEY / WRITES_STATE_KEY extraction (default {"state"}).
+        self._state_receivers = STATE_RECEIVERS
         self._lock = threading.Lock()
 
     def _get_parser(self, language: str):  # type: ignore[arg-type]
@@ -2406,6 +2416,16 @@ class CodeParser:
                     child, language, source, file_path, edges,
                 )
                 continue
+
+            # --- State-dict key access (READS/WRITES_STATE_KEY) ---
+            # Python-only, additive. Runs before the calls branch so
+            # ``state.get("k")`` is captured even if _extract_calls consumes
+            # the node; falls through otherwise so recursion still descends.
+            if language == "python" and node_type in ("subscript", "call"):
+                self._extract_state_key_access(
+                    child, node_type, file_path, nodes, edges,
+                    enclosing_class, enclosing_func,
+                )
 
             # --- Calls ---
             if node_type in call_types:
@@ -5123,6 +5143,256 @@ class CodeParser:
                     import_map, defined_names,
                     line=ch.start_point[0] + 1,
                 )
+
+    # AST call-method names on the state receiver and whether each reads
+    # and/or writes the key. ``.pop`` and ``.setdefault`` both observe an
+    # existing value AND mutate the dict, so they count as read+write.
+    _STATE_CALL_METHODS: dict[str, tuple[str, ...]] = {
+        "get": ("READS",),
+        "pop": ("READS", "WRITES"),
+        "setdefault": ("READS", "WRITES"),
+    }
+
+    @staticmethod
+    def _string_literal_text(node) -> Optional[str]:
+        """Return the *Python value* of a ``string`` literal node, or None.
+
+        The value is decoded via ``ast.literal_eval`` so that equivalent
+        spellings collapse to one key: ``"a"``, ``"\\x61"`` and ``"\\u0061"``
+        all yield ``"a"``, and ``"line\\nbreak"`` yields a real newline. Bytes
+        literals (``b"a"``), f-strings, and adjacent-string concatenations are
+        rejected (they are not ``str`` literals) so they never masquerade as a
+        matching key. The empty string ``""`` decodes to ``""`` and IS kept.
+        """
+        if node is None or node.type != "string":
+            return None
+        text = node.text.decode("utf-8", errors="replace")
+        try:
+            value = ast.literal_eval(text)
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            return None
+        return value if isinstance(value, str) else None
+
+    def _state_subscript_levels(
+        self, subscript_node,
+    ) -> tuple[Optional[str], list[Optional[str]]]:
+        """Walk a subscript chain from OUTERMOST index inward.
+
+        Returns ``(receiver_name, levels)`` where ``levels[0]`` is the
+        outermost index key and the last is the innermost. Each level is the
+        decoded string-literal key, or ``None`` when that index is dynamic
+        (``state[x]``). ``state["a"]["b"]`` -> ``("state", ["b", "a"])``.
+        Returns ``(None, ...)`` when the chain does not bottom out at a bare
+        identifier. Levels are kept positional (including ``None``) so callers
+        can tell which index is the actual write target vs. navigation reads.
+        """
+        levels: list[Optional[str]] = []
+        node = subscript_node
+        while node is not None and node.type == "subscript":
+            value = node.child_by_field_name("value")
+            if value is None:
+                value = node.children[0] if node.children else None
+            key: Optional[str] = None
+            # Index nodes sit between the brackets; take the first literal.
+            for ch in node.children[1:]:
+                k = self._string_literal_text(ch)
+                if k is not None:
+                    key = k
+                    break
+            levels.append(key)
+            node = value
+        if node is not None and node.type == "identifier":
+            return node.text.decode("utf-8", errors="replace"), levels
+        return None, levels
+
+    @staticmethod
+    def _field_name_of(parent, child) -> Optional[str]:
+        """Return the field name under which *child* sits in *parent*."""
+        if parent is None:
+            return None
+        for i, c in enumerate(parent.children):
+            if c.id == child.id:
+                return parent.field_name_for_child(i)
+        return None
+
+    @classmethod
+    def _leaf_access(cls, subscript_node) -> tuple[str, ...]:
+        """Classify the access mode of the OUTERMOST index of a subscript.
+
+        Returns ``("READS",)``, ``("WRITES",)`` or ``("READS", "WRITES")``.
+        Only the outermost index of a chain can be a write target; deeper
+        indices are always navigation reads (handled by the caller).
+
+        Recognised write contexts (Python assignment targets):
+        - ``state["k"] = v``            -> WRITES (subscript in ``left`` field)
+        - ``state["k"] += 1``           -> READS + WRITES (augmented target)
+        - ``a, state["k"] = ...``       -> WRITES (destructuring target)
+        - ``for state["k"] in xs``      -> WRITES (loop target)
+        - ``with m as state["k"]``      -> WRITES (as-pattern target)
+        - ``del state["k"]``            -> WRITES (deletion is a mutation)
+
+        Everything else (RHS of an assignment, augmented RHS, comprehension
+        body, call arg, return value, ...) is a pure READ.
+        """
+        node = subscript_node
+        parent = node.parent
+        # Ascend through destructuring wrappers so ``a, state["k"] = ...`` and
+        # ``for a, state["k"] in xs`` are seen as targets of the outer stmt.
+        while parent is not None and parent.type in (
+            "pattern_list", "expression_list", "tuple", "list",
+            "tuple_pattern", "list_pattern",
+        ):
+            node, parent = parent, parent.parent
+        if parent is None:
+            return ("READS",)
+        ptype = parent.type
+        if ptype == "augmented_assignment":
+            is_target = cls._field_name_of(parent, node) == "left"
+            return ("READS", "WRITES") if is_target else ("READS",)
+        if ptype in ("assignment", "for_statement"):
+            return (
+                ("WRITES",)
+                if cls._field_name_of(parent, node) == "left"
+                else ("READS",)
+            )
+        if ptype in ("as_pattern_target", "delete_statement"):
+            return ("WRITES",)
+        return ("READS",)
+
+    def _ensure_state_key_node(self, nodes: list[NodeInfo], key: str) -> None:
+        """Append a virtual StateKey node for *key* if not already present."""
+        for n in nodes:
+            if n.kind == "StateKey" and n.name == key:
+                return
+        nodes.append(NodeInfo(
+            kind="StateKey",
+            name=key,
+            file_path=STATE_SENTINEL,
+            line_start=0,
+            line_end=0,
+            language="python",
+        ))
+
+    def _emit_state_key_edges(
+        self,
+        pairs: list[tuple[str, tuple[str, ...]]],
+        file_path: str,
+        enclosing_class: Optional[str],
+        enclosing_func: Optional[str],
+        line: int,
+        nodes: list[NodeInfo],
+        edges: list[EdgeInfo],
+    ) -> None:
+        """Emit edges + StateKey nodes for (key, access-kinds) *pairs*."""
+        if not pairs:
+            return
+        source = (
+            self._qualify(enclosing_func, file_path, enclosing_class)
+            if enclosing_func else file_path
+        )
+        for key, kinds in pairs:
+            self._ensure_state_key_node(nodes, key)
+            for access in kinds:
+                edges.append(EdgeInfo(
+                    kind=f"{access}_STATE_KEY",
+                    source=source,
+                    target=f"{STATE_SENTINEL}::{key}",
+                    file_path=file_path,
+                    line=line,
+                ))
+
+    def _extract_state_key_access(
+        self,
+        child,
+        node_type: str,
+        file_path: str,
+        nodes: list[NodeInfo],
+        edges: list[EdgeInfo],
+        enclosing_class: Optional[str],
+        enclosing_func: Optional[str],
+    ) -> None:
+        """Emit READS_STATE_KEY / WRITES_STATE_KEY edges for state-dict access.
+
+        Python-only, additive (never consumes the node). Scoped to a bare
+        receiver identifier in ``self._state_receivers``. Write contexts:
+
+        - ``state["k"] = v`` / ``a, state["k"] = ...`` (assignment target) -> WRITES
+        - ``state["k"] += 1`` (augmented target)                          -> READS + WRITES
+        - ``for state["k"] in xs`` / ``with m as state["k"]``              -> WRITES
+        - ``del state["k"]``                                              -> WRITES
+        - ``state.pop/setdefault("k")``                                   -> READS + WRITES
+
+        Read contexts: ``state["k"]`` in value position, ``state.get("k")``,
+        and any subscript that is not an assignment target.
+
+        Nested chains: only the OUTERMOST index can be a write target;
+        deeper indices are navigation reads. ``state["a"]["b"] = v`` therefore
+        emits READS ``a`` (navigate) + WRITES ``b`` (mutate). Keys are decoded
+        to their Python string value (``"\\x61"`` == ``"a"``); bytes/f-strings
+        are not str literals and are skipped. Dynamic keys and non-literal
+        receivers are skipped silently.
+
+        NOT handled (documented v1 gaps): membership tests (``"k" in state``),
+        unpacking a whole state slice, and nested keys that collide across
+        different parent paths (``state["a"]["x"]`` and ``state["b"]["x"]``
+        both map to the flat key ``x``).
+        """
+        if node_type == "subscript":
+            # Only handle the outermost subscript of a chain; inner links
+            # (``state["a"]`` inside ``state["a"]["b"]``) are captured by the
+            # outer walk and would otherwise double-emit.
+            if child.parent is not None and child.parent.type == "subscript":
+                return
+            receiver, levels = self._state_subscript_levels(child)
+            if receiver not in self._state_receivers:
+                return
+            # ``levels[0]`` is the outermost index (the mutation target when
+            # this chain is on an assignment LHS); the rest are pure reads.
+            leaf_access = self._leaf_access(child)
+            pairs: list[tuple[str, tuple[str, ...]]] = []
+            for i, key in enumerate(levels):
+                if key is None:  # dynamic index — tolerated, skipped
+                    continue
+                pairs.append((key, leaf_access if i == 0 else ("READS",)))
+            self._emit_state_key_edges(
+                pairs, file_path, enclosing_class, enclosing_func,
+                child.start_point[0] + 1, nodes, edges,
+            )
+            return
+
+        if node_type == "call":
+            func = child.children[0] if child.children else None
+            if func is None or func.type != "attribute":
+                return
+            # attribute children: receiver "." method_identifier
+            recv = func.children[0] if func.children else None
+            method_node = func.children[-1] if func.children else None
+            if recv is None or recv.type != "identifier":
+                return
+            if recv.text.decode("utf-8", errors="replace") not in self._state_receivers:
+                return
+            if method_node is None or method_node.type != "identifier":
+                return
+            method = method_node.text.decode("utf-8", errors="replace")
+            kinds = self._STATE_CALL_METHODS.get(method)
+            if kinds is None:
+                return
+            # First positional arg must be a string literal (the key).
+            arglist = child.children[1] if len(child.children) > 1 else None
+            if arglist is None or arglist.type != "argument_list":
+                return
+            key = None
+            for arg in arglist.children:
+                if arg.type in ("(", ",", ")"):
+                    continue
+                key = self._string_literal_text(arg)
+                break
+            if key is None:
+                return
+            self._emit_state_key_edges(
+                [(key, kinds)], file_path, enclosing_class, enclosing_func,
+                child.start_point[0] + 1, nodes, edges,
+            )
 
     def _extract_solidity_constructs(
         self,

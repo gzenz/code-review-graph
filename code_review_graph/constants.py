@@ -21,3 +21,10 @@ MAX_SEARCH_RESULTS = int(os.environ.get("CRG_MAX_SEARCH_RESULTS", "20"))
 
 # BFS engine: "sql" (SQLite recursive CTE) or "networkx" (Python-side BFS)
 BFS_ENGINE = os.environ.get("CRG_BFS_ENGINE", "sql")
+
+# Receiver names treated as "the shared state dict" for READS_STATE_KEY /
+# WRITES_STATE_KEY extraction (LangGraph-style state-dict access). Comma-separated;
+# matched only against bare identifiers (e.g. ``state["k"]``, ``state.get("k")``).
+STATE_RECEIVERS = frozenset(
+    s.strip() for s in os.environ.get("CRG_STATE_RECEIVERS", "state").split(",") if s.strip()
+)

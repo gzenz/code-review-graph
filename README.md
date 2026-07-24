@@ -205,6 +205,7 @@ Everything below is new relative to upstream [tirth8205/code-review-graph](https
 
 **Queries & reviews**
 - **Transitive test lookup + de-duplication** — `query_graph` / `tests_for` now follow transitive `TESTED_BY` links and de-duplicate results.
+- **State-dict key read/write edges (Python)** — the parser emits `READS_STATE_KEY` / `WRITES_STATE_KEY` edges for accesses to a shared "state" dict (the LangGraph pattern: `state["k"]`, `state.get("k")`, `state.pop`/`setdefault`, nested `state["a"]["b"]`, and writes `state["k"] = ...`). Query them with `query_graph` patterns `readers_of_key` / `writers_of_key` to answer "who reads vs writes this key" as a graph query instead of a grep. The receiver name is configurable via `CRG_STATE_RECEIVERS` (default `state`). This is deliberately **syntactic** — scoped to a bare receiver identifier, no type inference — so any local dict named `state` is a possible false positive; nested keys are flattened, so `state["a"]["x"]` and `state["b"]["x"]` collide on `x`.
 
 **CLI**
 - **`enrich` subcommand** — run call-graph enrichment as a standalone step (also used for PreToolUse search enrichment).
@@ -362,7 +363,7 @@ Your AI assistant uses these automatically once the graph is built.
 | `get_minimal_context_tool` | Ultra-compact context (~100 tokens) — call this first |
 | `get_impact_radius_tool` | Blast radius of changed files |
 | `get_review_context_tool` | Token-optimised review context with structural summary |
-| `query_graph_tool` | Callers, callees, tests, imports, inheritance queries |
+| `query_graph_tool` | Callers, callees, tests, imports, inheritance, and state-key reader/writer queries |
 | `traverse_graph_tool` | BFS/DFS traversal from any node with token budget |
 | `semantic_search_nodes_tool` | Search code entities by name or meaning |
 | `embed_graph_tool` | Compute vector embeddings for semantic search |
@@ -436,6 +437,7 @@ pip install code-review-graph[all]                 # All optional dependencies
 | `CRG_OPENAI_DIMENSION` | Pin embedding dimension (v3 models support reduction) | - |
 | `NO_COLOR` | If set, disables ANSI colors in terminal | - |
 | `CRG_SERIAL_PARSE` | If `1`, disables parallel parsing (use for debugging) | - |
+| `CRG_STATE_RECEIVERS` | Comma-separated receiver names treated as the shared state dict for `READS_STATE_KEY`/`WRITES_STATE_KEY` extraction | `state` |
 
 OpenAI-compatible embeddings (real OpenAI, Azure, or any self-hosted gateway like
 new-api / LiteLLM / vLLM / LocalAI / Ollama in openai mode) need no extra install —

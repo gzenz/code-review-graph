@@ -340,3 +340,95 @@ class TestImpactRadiusSql:
         assert result["changed_nodes"] == []
         assert result["impacted_nodes"] == []
         assert result["total_impacted"] == 0
+
+
+class TestStateKeyLifecycle:
+    """StateKey virtual nodes survive per-file reparse and stay out of analytics."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def _state_key_node(self, key):
+        return NodeInfo(
+            kind="StateKey", name=key, file_path="<state>",
+            line_start=0, line_end=0, language="python",
+        )
+
+    def _read_edge(self, src_file, key):
+        return EdgeInfo(
+            kind="READS_STATE_KEY", source=f"{src_file}::fn",
+            target=f"<state>::{key}", file_path=src_file, line=1,
+        )
+
+    def test_state_key_survives_other_file_reparse(self):
+        # File A emits the key; reparsing file B must not delete it.
+        self.store.store_file_nodes_edges(
+            "/a.py", [self._state_key_node("shared")], [self._read_edge("/a.py", "shared")],
+        )
+        self.store.store_file_nodes_edges(
+            "/b.py", [self._state_key_node("shared")], [self._read_edge("/b.py", "shared")],
+        )
+        # Reparse A with no state access; StateKey (file_path="<state>") stays.
+        self.store.store_file_nodes_edges("/a.py", [], [])
+        assert self.store.get_node("<state>::shared") is not None
+        # B's read edge still resolves.
+        edges = self.store.get_edges_by_target("<state>::shared")
+        assert any(e.file_path == "/b.py" for e in edges)
+        assert all(e.file_path != "/a.py" for e in edges)
+
+    def test_orphan_state_key_persists_when_last_reader_removed(self):
+        self.store.store_file_nodes_edges(
+            "/a.py", [self._state_key_node("solo")], [self._read_edge("/a.py", "solo")],
+        )
+        self.store.store_file_nodes_edges("/a.py", [], [])
+        # Node persists (accepted orphan), no edges remain.
+        assert self.store.get_node("<state>::solo") is not None
+        assert self.store.get_edges_by_target("<state>::solo") == []
+
+    def test_state_key_excluded_from_get_all_nodes(self):
+        self.store.store_file_nodes_edges(
+            "/a.py",
+            [
+                NodeInfo(kind="File", name="/a.py", file_path="/a.py",
+                         line_start=1, line_end=1, language="python"),
+                NodeInfo(kind="Function", name="fn", file_path="/a.py",
+                         line_start=1, line_end=1, language="python"),
+                self._state_key_node("shared"),
+            ],
+            [],
+        )
+        kinds = {n.kind for n in self.store.get_all_nodes(exclude_files=True)}
+        assert "StateKey" not in kinds
+        assert "Function" in kinds
+
+    def _impact_setup(self):
+        # A real function that reads a state key; the sentinel node must not
+        # surface as an impacted "file".
+        self.store.store_file_nodes_edges(
+            "/a.py",
+            [
+                NodeInfo(kind="File", name="/a.py", file_path="/a.py",
+                         line_start=1, line_end=2, language="python"),
+                NodeInfo(kind="Function", name="fn", file_path="/a.py",
+                         line_start=1, line_end=2, language="python"),
+                self._state_key_node("shared"),
+            ],
+            [self._read_edge("/a.py", "shared")],
+        )
+
+    def test_state_key_excluded_from_impact_sql(self):
+        self._impact_setup()
+        result = self.store.get_impact_radius_sql(["/a.py"])
+        assert "<state>" not in result["impacted_files"]
+        assert all(n.kind != "StateKey" for n in result["impacted_nodes"])
+
+    def test_state_key_excluded_from_impact_networkx(self):
+        self._impact_setup()
+        result = self.store._get_impact_radius_networkx(["/a.py"])
+        assert "<state>" not in result["impacted_files"]
+        assert all(n.kind != "StateKey" for n in result["impacted_nodes"])
