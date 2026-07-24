@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.3.6+gzenz.2] - 2026-07-24
+
 ### Added
 
 - **State-dict key read/write edges (Python)**: the parser emits `READS_STATE_KEY` / `WRITES_STATE_KEY` edges for accesses to a shared "state" dict (the LangGraph pattern). Detects subscript reads/writes (`state["k"]`, `state["k"] = v`), `.get`/`.pop`/`.setdefault` calls, augmented assignment, `for`/`with`/`del` targets, and nested chains (`state["a"]["b"]` reads the outer navigation level and writes only the leaf). Keys are decoded to their Python string value (`"\x61"` == `"a"`); bytes and f-strings are skipped. Emits a virtual `StateKey` node parked under a `<state>` sentinel path that survives per-file reparse and is excluded from hub/dead-code/community/embedding/impact analytics. Two new `query_graph` patterns — `readers_of_key` / `writers_of_key` — resolve a bare key to its reader/writer functions. Receiver name is configurable via `CRG_STATE_RECEIVERS` (default `state`). Deliberately syntactic (no type inference); documented limitations: local dicts named `state` are false positives, and nested keys are flattened so `state["a"]["x"]` and `state["b"]["x"]` collide on `x`. Membership tests (`"k" in state`) are not tracked. Adds `TestStateKeyExtraction`, `TestStateKeyLifecycle`, and `TestStateKeyQuery` (35+ tests) plus fixture `tests/fixtures/sample_state_graph.py`.
