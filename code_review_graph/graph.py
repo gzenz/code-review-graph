@@ -335,10 +335,16 @@ class GraphStore:
         return [self._row_to_node(r) for r in rows]
 
     def get_all_nodes(self, exclude_files: bool = True) -> list[GraphNode]:
-        """Return all nodes, optionally excluding File nodes."""
+        """Return all nodes, optionally excluding File and virtual nodes.
+
+        When ``exclude_files`` is set, virtual ``StateKey`` nodes are also
+        excluded: they carry a synthetic ``<state>`` file_path and are not real
+        code, so they must not pollute hub scoring, dead-code detection,
+        community detection, or embeddings.
+        """
         if exclude_files:
             rows = self._conn.execute(
-                "SELECT * FROM nodes WHERE kind != 'File'"
+                "SELECT * FROM nodes WHERE kind NOT IN ('File', 'StateKey')"
             ).fetchall()
         else:
             rows = self._conn.execute("SELECT * FROM nodes").fetchall()
@@ -717,6 +723,13 @@ class GraphStore:
         changed_nodes = self._batch_get_nodes(seeds)
         impacted_nodes = self._batch_get_nodes(impacted_qns)
 
+        # Virtual StateKey nodes (parked under the ``<state>`` sentinel path)
+        # may be reached via READS/WRITES_STATE_KEY edges. They are useful for
+        # linking readers to writers during traversal but are NOT real code
+        # entities, so drop them from user-facing impact results — otherwise
+        # ``<state>`` shows up as a bogus impacted "file".
+        impacted_nodes = [n for n in impacted_nodes if n.kind != "StateKey"]
+
         total_impacted = len(impacted_nodes)
         truncated = total_impacted > max_nodes
         if truncated:
@@ -783,6 +796,9 @@ class GraphStore:
         changed_nodes = self._batch_get_nodes(seeds)
         impacted_qns = impacted - seeds
         impacted_nodes = self._batch_get_nodes(impacted_qns)
+
+        # Drop virtual StateKey nodes — see get_impact_radius_sql for rationale.
+        impacted_nodes = [n for n in impacted_nodes if n.kind != "StateKey"]
 
         total_impacted = len(impacted_nodes)
         truncated = total_impacted > max_nodes

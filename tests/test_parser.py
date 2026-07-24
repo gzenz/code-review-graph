@@ -1458,3 +1458,198 @@ class TestCppScopedFunctionName:
         fns = [n for n in nodes if n.kind == "Function"]
         assert len(fns) == 1
         assert fns[0].name == "get_obj_fingerprint"
+
+
+class TestStateKeyExtraction:
+    """READS_STATE_KEY / WRITES_STATE_KEY edges + StateKey nodes."""
+
+    def setup_method(self):
+        self.parser = CodeParser()
+
+    def _parse(self):
+        return self.parser.parse_file(FIXTURES / "sample_state_graph.py")
+
+    @staticmethod
+    def _keys(edges, kind):
+        return sorted(
+            e.target.split("::")[-1] for e in edges if e.kind == kind
+        )
+
+    def test_subscript_read(self):
+        _, edges = self._parse()
+        assert "read_key" in self._keys(edges, "READS_STATE_KEY")
+
+    def test_subscript_write(self):
+        _, edges = self._parse()
+        assert "retry_reason" in self._keys(edges, "WRITES_STATE_KEY")
+
+    def test_get_call_is_read(self):
+        # The interrupt_state gotcha: read only via state.get(...).
+        _, edges = self._parse()
+        assert "interrupt_state" in self._keys(edges, "READS_STATE_KEY")
+
+    def test_interrupt_state_read_write_counts(self):
+        # 1 read (.get), 5 writes (subscript LHS).
+        _, edges = self._parse()
+        reads = [
+            e for e in edges
+            if e.kind == "READS_STATE_KEY" and e.target.endswith("::interrupt_state")
+        ]
+        writes = [
+            e for e in edges
+            if e.kind == "WRITES_STATE_KEY" and e.target.endswith("::interrupt_state")
+        ]
+        assert len(reads) == 1
+        assert len(writes) == 5
+
+    def test_nested_subscript_captures_leaf_and_root(self):
+        _, edges = self._parse()
+        reads = self._keys(edges, "READS_STATE_KEY")
+        assert "retry_reason" in reads  # leaf of state["payload"]["retry_reason"]
+        assert "payload" in reads
+
+    def test_dynamic_intermediate_key_tolerated(self):
+        # state[idx]["dynamic_ok"] -> literal leaf still captured.
+        _, edges = self._parse()
+        assert "dynamic_ok" in self._keys(edges, "READS_STATE_KEY")
+
+    def test_pop_is_read_and_write(self):
+        _, edges = self._parse()
+        assert "popped" in self._keys(edges, "READS_STATE_KEY")
+        assert "popped" in self._keys(edges, "WRITES_STATE_KEY")
+
+    def test_setdefault_is_read_and_write(self):
+        _, edges = self._parse()
+        assert "seeded" in self._keys(edges, "READS_STATE_KEY")
+        assert "seeded" in self._keys(edges, "WRITES_STATE_KEY")
+
+    def test_augmented_assignment_is_read_and_write(self):
+        _, edges = self._parse()
+        assert "counter" in self._keys(edges, "READS_STATE_KEY")
+        assert "counter" in self._keys(edges, "WRITES_STATE_KEY")
+
+    def test_non_receiver_dict_ignored(self):
+        # cfg["unrelated"] is not the configured receiver.
+        _, edges = self._parse()
+        all_keys = (
+            self._keys(edges, "READS_STATE_KEY")
+            + self._keys(edges, "WRITES_STATE_KEY")
+        )
+        assert "unrelated" not in all_keys
+
+    def test_state_key_nodes_use_sentinel_path(self):
+        nodes, _ = self._parse()
+        sk = [n for n in nodes if n.kind == "StateKey"]
+        assert sk, "expected StateKey nodes"
+        assert all(n.file_path == "<state>" for n in sk)
+        assert all(n.line_start == 0 for n in sk)
+
+    def test_edge_source_is_enclosing_function(self):
+        _, edges = self._parse()
+        read = next(
+            e for e in edges
+            if e.kind == "READS_STATE_KEY" and e.target.endswith("::read_key")
+        )
+        assert read.source.endswith("::node_read")
+
+    def test_receiver_name_configurable(self, tmp_path):
+        src = tmp_path / "custom_receiver.py"
+        src.write_text(
+            "def handler(st):\n"
+            '    return st["aliased_key"]\n'
+        )
+        p = CodeParser()
+        p._state_receivers = frozenset({"st", "state"})
+        _, edges = p.parse_file(src)
+        assert "aliased_key" in self._keys(edges, "READS_STATE_KEY")
+
+    # --- review-driven correctness fixes ---
+
+    def _parse_src(self, src: str):
+        p = CodeParser()
+        return p.parse_bytes(Path("state_case.py"), src.encode())
+
+    @staticmethod
+    def _access(edges, key):
+        """Return the sorted access modes recorded for *key*."""
+        out = set()
+        for e in edges:
+            if e.target.endswith(f"::{key}"):
+                out.add(e.kind.replace("_STATE_KEY", ""))
+        return sorted(out)
+
+    def test_nested_write_reads_root_writes_leaf(self):
+        # state["a"]["b"] = v : navigating "a" is a READ; only "b" is WRITTEN.
+        _, edges = self._parse_src(
+            'def f(state):\n    state["a"]["b"] = 1\n'
+        )
+        assert self._access(edges, "a") == ["READS"]
+        assert self._access(edges, "b") == ["WRITES"]
+
+    def test_nested_augmented_write(self):
+        # state["a"]["b"] += 1 : READ a; READ+WRITE b.
+        _, edges = self._parse_src(
+            'def f(state):\n    state["a"]["b"] += 1\n'
+        )
+        assert self._access(edges, "a") == ["READS"]
+        assert self._access(edges, "b") == ["READS", "WRITES"]
+
+    def test_for_loop_target_is_write(self):
+        _, edges = self._parse_src(
+            'def f(state, xs):\n    for state["cur"] in xs:\n        pass\n'
+        )
+        assert self._access(edges, "cur") == ["WRITES"]
+
+    def test_with_as_target_is_write(self):
+        _, edges = self._parse_src(
+            'def f(state, m):\n    with m as state["r"]:\n        pass\n'
+        )
+        assert self._access(edges, "r") == ["WRITES"]
+
+    def test_del_is_write(self):
+        _, edges = self._parse_src('def f(state):\n    del state["gone"]\n')
+        assert self._access(edges, "gone") == ["WRITES"]
+
+    def test_augmented_rhs_is_pure_read(self):
+        # total += state["k"] : the subscript is on the RHS -> READ only.
+        _, edges = self._parse_src(
+            'def f(state, total):\n    total += state["k"]\n'
+        )
+        assert self._access(edges, "k") == ["READS"]
+
+    def test_tuple_target_is_write(self):
+        _, edges = self._parse_src(
+            'def f(state):\n    a, state["k"] = 1, 2\n'
+        )
+        assert self._access(edges, "k") == ["WRITES"]
+
+    def test_rhs_tuple_is_read(self):
+        _, edges = self._parse_src(
+            'def f(state):\n    x = a, state["k"]\n'
+        )
+        assert self._access(edges, "k") == ["READS"]
+
+    def test_chained_assignment_target_is_write(self):
+        _, edges = self._parse_src('def f(state):\n    a = state["k"] = v\n')
+        assert self._access(edges, "k") == ["WRITES"]
+
+    def test_escaped_key_decodes_to_value(self):
+        # "\x61" is the same key as "a" — must collapse, not diverge.
+        _, edges = self._parse_src(
+            'def f(state):\n    return state["\\x61"]\n'
+        )
+        assert self._access(edges, "a") == ["READS"]
+
+    def test_empty_string_key_captured(self):
+        _, edges = self._parse_src('def f(state):\n    return state[""]\n')
+        assert self._access(edges, "") == ["READS"]
+
+    def test_bytes_key_ignored(self):
+        _, edges = self._parse_src('def f(state):\n    return state[b"k"]\n')
+        assert not [e for e in edges if "STATE_KEY" in e.kind]
+
+    def test_fstring_key_ignored(self):
+        _, edges = self._parse_src(
+            'def f(state, x):\n    return state[f"{x}"]\n'
+        )
+        assert not [e for e in edges if "STATE_KEY" in e.kind]
